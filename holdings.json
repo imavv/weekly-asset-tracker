@@ -1,0 +1,15 @@
+{
+  "_comment": "STATIC HOLDINGS — your share counts (and optional avg cost). The script injects these into column F (qty) and H (avg) for matching tickers, overriding whatever Claude guessed. UPDATE THIS FILE whenever you buy or sell. 'qty' = number of shares (for IDX stocks that would be lots*100, but those come from the broker screenshot so they're omitted here). 'avg' = average cost basis in the SAME currency as the price column (USD for ETFs); set to null or omit if you don't track it — the I/J change formulas just won't be meaningful.",
+
+  "VOO":  { "qty": 3.068, "avg": null },
+  "VT":   { "qty": 15.572, "avg": null },
+  "VTI":  { "qty": 5.693, "avg": null },
+  "SPYM": { "qty": 13.568, "avg": null },
+  "GDX":  { "qty": 8.955, "avg": null },
+  "VEA":  { "qty": 8.955, "avg": null },
+  "SMH":  { "qty": 1.19, "avg": null },
+  "GLD":  { "qty": 0.7, "avg": null },
+  "IGV":  { "qty": 3.728, "avg": null },
+  "XLP":  { "qty": 3.527, "avg": null },
+  "XLE":  { "qty": 1.529, "avg": null }
+}
