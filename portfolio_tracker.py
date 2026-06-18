@@ -26,6 +26,7 @@ from pathlib import Path
 
 import anthropic
 import requests
+import os
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
