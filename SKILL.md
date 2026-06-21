@@ -34,9 +34,9 @@ A (Date EOD) | B (Category) | C (Account) | D (Value IDR) | E (Key) | F (Qty) | 
   - Stock: formula `=F{row}*G{row}`
   - ETF: formula `=F{row}*G{row}*$K$1563` (always references the FX anchor row)
   - Ajaib (Cash): formula `={buying_power_usd}*$K$1563`
-- **Key (E)**: Leave blank — user fills separately
-- **Qty (F)**: For stocks/ETFs only. Store the **share count** (not lots) — i.e. lots × 100 for IDX stocks.
-  - IDX stocks (BBCA, ICBP, BBRI): read from the broker screenshot.
+- **Key (E)**: Leave blank — a downstream script fills it with `=CONCATENATE(A{row},"-",B{row})`
+- **Qty (F)**: For stocks/ETFs only.
+  - IDX stocks (BBCA, ICBP, BBRI): output the **raw lot count** exactly as shown in the broker screenshot (e.g. 44). Do NOT multiply by 100 — a downstream script converts lots → shares.
   - **ETFs (automated/API use): leave as `0`.** A downstream script injects the share count from a static `holdings.json` file. Do NOT carry forward or guess ETF quantities.
 - **Share price (G)**: For stocks/ETFs only. Hardcoded real-time price. IDR for IDX stocks, USD for US ETFs. 2 decimal places
 - **Avg price (H)**: Cost basis.
@@ -44,7 +44,7 @@ A (Date EOD) | B (Category) | C (Account) | D (Value IDR) | E (Key) | F (Qty) | 
   - **ETFs (automated/API use): leave as `0`.** Injected from `holdings.json` by the script alongside qty.
 - **Pct change (I)**: Formula `=(G{row}-H{row})/H{row}` — Google Sheets will format as % if column is formatted that way
 - **Abs change (J)**: Formula `=(G{row}-H{row})*F{row}`
-- **USD/IDR (K)**: Only filled on the FIRST row (Mandiri, row 1563). Formula: `=GOOGLEFINANCE("CURRENCY:USDIDR")`. All other K cells are blank. All ETF/Ajaib value formulas reference `$K$1563`
+- **USD/IDR (K)**: Only on the FIRST row (Mandiri). You may output `=GOOGLEFINANCE("CURRENCY:USDIDR")`, but a downstream script overwrites it with the **locked numeric rate** at this date (falling back to the formula only if the fetch fails). All other K cells blank. All ETF/Ajaib value formulas reference `$K$<first row>`
 
 **No header row in output.** Never include a header row — paste starts directly with data.
 
@@ -90,7 +90,7 @@ For each screenshot:
 **Indonesian Stocks (IDX)** — price in IDR:
 - Tickers: BBCA, ICBP, BBRI
 - **Read the last price directly from the attached broker screenshot.** Do NOT web-search these — the screenshot is the source of truth and avoids search failures.
-- The broker screenshot typically shows qty in LOTS (1 lot = 100 shares) — multiply by 100 for column F
+- The broker screenshot shows qty in LOTS (1 lot = 100 shares). Output the RAW lot count in column F — do NOT multiply by 100; the downstream script does that conversion
 - Share price (G): IDR, no decimals needed
 
 **US ETFs** — price in USD:
@@ -139,7 +139,8 @@ Default roster order and row mapping (starting row = first data row, e.g. 1563):
 - Tab-separated, 11 columns (A–K) per row
 - Cash/Deposit/MF Bonds: hardcoded value in D, blanks in E–K (except K on row 1563)
 - Stock/ETF: formulas in D, I, J; hardcoded qty in F, price in G, avg price in H; blank in E and K
-- After the table, output a summary: total by category and grand total (use the hardcoded/computed values for reference, noting ETF/stock values are formula-driven)
+- **Always output all 23 rows in roster order.** For any missing/unreadable value, put `0` in that cell and keep the row — never skip a row.
+- **Automated (API) use: output ONLY the raw tab-separated table.** No summary table, no totals, no narration, no markdown, no code fences. The only thing allowed after the table is optional `# ` note lines listing which values were zero-filled.
 
 ---
 
@@ -175,7 +176,7 @@ Default roster order and row mapping (starting row = first data row, e.g. 1563):
 
 ## Edge Cases
 
-- **Missing screenshot**: Flag which accounts are missing before outputting. Do not silently leave values blank.
+- **Missing screenshot**: In **interactive (chat)** use, flag which accounts are missing before outputting. In **automated (API)** use, do NOT stall — still output the row with `0` in the missing value cell, and append a `# ` note after the table naming the zero-filled account.
 - **Ambiguous balance**: If multiple figures shown in screenshot, ask user to confirm.
 - **Market closed / price unavailable**: Use most recent closing price; note the date.
 - **Qty change**: Update F, recompute D formula accordingly.

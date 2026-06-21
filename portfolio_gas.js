@@ -37,6 +37,21 @@ function doGet(e) {
       return respond(404, `Sheet "${SHEET_NAME}" not found`);
     }
 
+    // ── action=summary → return the two dashboard tables ──────────────
+    // Return display values AND per-cell formatting so the rendered image
+    // matches the sheet exactly (don't change the format).
+    if (e.parameter.action === "summary") {
+      const out = ContentService.createTextOutput(
+        JSON.stringify({
+          status:    200,
+          trend:     rangeData(sheet, "L4:O10"),   // Week-to-Week Trend
+          breakdown: rangeData(sheet, "H13:J21"),  // Asset Breakdown
+        })
+      );
+      out.setMimeType(ContentService.MimeType.JSON);
+      return out;
+    }
+
     // Find last row with data in col A, then go one past it
     const lastRow = sheet.getRange("A:A")
                          .getValues()
@@ -115,6 +130,22 @@ function doPost(e) {
     return respond(500, `Server error: ${err.message}`);
   }
 }
+
+/**
+ * Helper: read a range and return its display values + per-cell formatting,
+ * so the downstream renderer can reproduce the sheet's exact look.
+ */
+function rangeData(sheet, a1) {
+  const r = sheet.getRange(a1);
+  return {
+    values:      r.getDisplayValues(),  // text exactly as shown (currency, %, mn)
+    backgrounds: r.getBackgrounds(),    // "#rrggbb" fill per cell
+    fontColors:  r.getFontColors(),     // "#rrggbb" text colour per cell
+    fontWeights: r.getFontWeights(),    // "bold" | "normal"
+    fontStyles:  r.getFontStyles(),     // "italic" | "normal"
+  };
+}
+
 
 /** Helper: return a JSON HTTP response */
 function respond(code, message) {

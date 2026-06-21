@@ -29,7 +29,7 @@ RAW = """2026-06-16\tCash\tMandiri\t34897289\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t=GOOGL
 2026-06-16\tETF\tXLP\t=F1653*G1653*$K$1632\t\t0\t83.25\t\t=(G1653-H1653)/H1653\t=(G1653-H1653)*F1653\t
 2026-06-16\tETF\tXLE\t=F1654*G1654*$K$1632\t\t0\t56.19\t\t=(G1654-H1654)/H1654\t=(G1654-H1654)*F1654\t"""
 
-rows = parse_table(RAW, START_ROW)
+rows, _notes = parse_table(RAW, START_ROW)
 rows = apply_holdings(rows)
 validate_rows(rows, START_ROW)
 preview_table(rows, START_ROW)

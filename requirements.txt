@@ -1,2 +1,6 @@
-anthropic
-requests
+anthropic>=0.84.0
+requests>=2.32
+python-dotenv>=1.0
+python-telegram-bot>=21.0
+pandas>=2.0
+matplotlib>=3.7

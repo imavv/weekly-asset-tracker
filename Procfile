@@ -1,1 +1,1 @@
-worker: echo "Ready"
+worker: python bot.py
