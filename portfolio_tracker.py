@@ -52,6 +52,9 @@ HOLDINGS_PATH = Path(__file__).parent / "holdings.json"  # static share counts (
 LOG_DIR       = Path(__file__).parent / "logs"           # per-run audit logs, indexed by timestamp
 
 NUM_COLS = 11   # A–K
+MIN_TABLE_ROWS = 20   # a real table block must have at least this many contiguous
+                      # rows. Set below the current 23-row roster on purpose, so
+                      # adding a few new asset types later doesn't break selection.
 
 # ── MODEL SELECTION ───────────────────────────────────────────────────────────
 # Switch models to compare quality vs cost. Pick via:
@@ -242,20 +245,45 @@ def parse_table(raw: str, start_row: int) -> tuple[list[list], list[str]]:
     - Blank cells are empty strings ""
     - Numeric cells (balances, prices, quantities) are cast to float/int
     """
-    # Keep only genuine table lines: non-empty, not a '# ' note, and tab-containing
-    notes = []
-    table_lines = []
-    for l in raw.strip().splitlines():
-        if not l.strip():
-            continue
-        if l.lstrip().startswith("#"):
-            notes.append(l.strip())
-            continue
-        if "\t" not in l:        # skip any stray prose Claude added
-            notes.append(l.strip())
-            continue
-        table_lines.append(l)
+    # A "table line" is a non-blank, non-'#' line that contains a tab.
+    def _is_table_line(l: str) -> bool:
+        return bool(l.strip()) and not l.lstrip().startswith("#") and "\t" in l
 
+    raw_lines = raw.strip().splitlines()
+
+    # Claude can emit several DRAFT tables in one response (it "thinks out loud"),
+    # and the API may return multiple text blocks that get joined here — so the
+    # raw text can contain many tab-separated lines, not just the final table.
+    # Segment the text into contiguous runs of table lines, then take the LAST
+    # run that has >= MIN_TABLE_ROWS rows: that's the final, complete table.
+    runs: list[tuple[list[str], int]] = []   # (rows, index of first line AFTER run)
+    cur: list[str] = []
+    for idx, l in enumerate(raw_lines):
+        if _is_table_line(l):
+            cur.append(l)
+        elif cur:
+            runs.append((cur, idx))
+            cur = []
+    if cur:
+        runs.append((cur, len(raw_lines)))
+
+    qualifying = [(rows, end) for rows, end in runs if len(rows) >= MIN_TABLE_ROWS]
+    if qualifying:
+        table_lines, block_end = qualifying[-1]      # last complete block
+    elif runs:
+        table_lines, block_end = max(runs, key=lambda r: len(r[0]))  # best effort
+    else:
+        table_lines, block_end = [], len(raw_lines)
+
+    if len(runs) > 1 or (runs and len(table_lines) != sum(len(r) for r, _ in runs)):
+        dropped = sum(len(r) for r, _ in runs) - len(table_lines)
+        print(f"[!] Found {len(runs)} table block(s) in Claude's output; kept the "
+              f"last block of {len(table_lines)} rows, discarded {dropped} draft/"
+              f"stray row(s).")
+
+    # Notes = '# ' lines after the chosen block (per SKILL, the only legit
+    # trailing content — e.g. "# VT set to 0"). Scratch-work earlier is ignored.
+    notes = [l.strip() for l in raw_lines[block_end:] if l.lstrip().startswith("#")]
     if notes:
         print("\n[!] Claude attached notes:")
         for n in notes:
