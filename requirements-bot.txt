@@ -1,0 +1,9 @@
+# Dependencies for the RETIRED Telegram bot (bot.py, render.py,
+# portfolio_tracker.py). Kept so the old pipeline can be restored as a fallback
+# until the MCP server has written a full week successfully.
+anthropic>=0.84.0
+requests>=2.32
+python-dotenv>=1.0
+python-telegram-bot>=21.0
+pandas>=2.0
+matplotlib>=3.7

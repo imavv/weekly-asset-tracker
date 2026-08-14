@@ -13,6 +13,7 @@
 const SECRET_TOKEN   = "REPLACE_WITH_YOUR_SECRET";    // any random string
 const SHEET_NAME     = "Sheet1";                       // your tracker tab name
 const SPREADSHEET_ID = "REPLACE_WITH_YOUR_SHEET_ID";  // from the Sheet URL
+const SCRATCH_SHEET  = "_price_scratch";               // hidden tab, auto-created
 // ────────────────────────────────────────────────────────────────
 
 /**
@@ -50,6 +51,15 @@ function doGet(e) {
       );
       out.setMimeType(ContentService.MimeType.JSON);
       return out;
+    }
+
+    // ── action=prices → resolve GOOGLEFINANCE to STATIC numbers ───────
+    // Why not just write =GOOGLEFINANCE into column G? Because that formula
+    // recalculates forever, so every past week's snapshot would silently
+    // rewrite itself to today's price. We resolve it here and hand back plain
+    // numbers, which get stored as fixed values.
+    if (e.parameter.action === "prices") {
+      return resolvePrices(e.parameter.tickers);
     }
 
     // Find last row with data in col A, then go one past it
@@ -118,6 +128,17 @@ function doPost(e) {
       return respond(404, `Sheet "${SHEET_NAME}" not found`);
     }
 
+    // ── 4a. Duplicate-date guard ───────────────────────────────
+    // Chat is freeform — "hmm, try again?" is an easy way to append a second
+    // 23-row block for the same week and silently inflate the summary. Refuse
+    // unless the caller explicitly passes force:true.
+    const blockDate = String(rows[0][0]).trim();
+    if (payload.force !== true && dateAlreadyPresent(sheet, blockDate)) {
+      return respond(409,
+        `A block dated ${blockDate} already exists in this sheet — refusing to ` +
+        `write a duplicate. Pass force:true to override.`);
+    }
+
     const range = sheet.getRange(startRow, 1, rows.length, numCols);
 
     // USER_ENTERED so formula strings are evaluated by Sheets, not stored as text
@@ -130,6 +151,96 @@ function doPost(e) {
     return respond(500, `Server error: ${err.message}`);
   }
 }
+
+/**
+ * Resolve tickers to STATIC prices using the sheet's own GOOGLEFINANCE.
+ *
+ * Writes formulas to a hidden scratch tab, waits for them to settle, reads the
+ * computed numbers, then clears it. Returns { status, prices: {TICKER: number} }.
+ * Tickers that fail to resolve are simply absent from `prices` — the caller
+ * decides what to do about them.
+ */
+function resolvePrices(tickersParam) {
+  // Sanitise hard: these strings are interpolated into a formula, and they
+  // originate from a language model. Allow only ticker-shaped input.
+  const tickers = String(tickersParam || "")
+    .split(",")
+    .map(function (t) { return t.trim().toUpperCase(); })
+    .filter(function (t) { return /^[A-Z0-9.:-]{1,15}$/.test(t); });
+
+  if (!tickers.length) {
+    return respond(400, "No valid tickers supplied");
+  }
+
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  let scratch = ss.getSheetByName(SCRATCH_SHEET);
+  if (!scratch) {
+    scratch = ss.insertSheet(SCRATCH_SHEET);
+    scratch.hideSheet();
+  }
+  scratch.clearContents();
+
+  const formulas = tickers.map(function (t) {
+    return ['=IFERROR(GOOGLEFINANCE("' + t + '","price"),"")'];
+  });
+  const range = scratch.getRange(1, 1, formulas.length, 1);
+  range.setFormulas(formulas);
+  SpreadsheetApp.flush();
+
+  // GOOGLEFINANCE resolves asynchronously and shows "Loading..." meanwhile.
+  // Poll until every cell has settled, or we run out of patience.
+  let values = range.getValues();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const stillLoading = values.some(function (r) {
+      return String(r[0]).indexOf("Loading") === 0;
+    });
+    if (!stillLoading) break;
+    Utilities.sleep(1000);
+    SpreadsheetApp.flush();
+    values = range.getValues();
+  }
+
+  const prices = {};
+  tickers.forEach(function (t, i) {
+    const v = values[i] ? values[i][0] : "";
+    if (typeof v === "number" && v > 0) prices[t] = v;
+  });
+
+  scratch.clearContents();
+
+  const out = ContentService.createTextOutput(
+    JSON.stringify({ status: 200, prices: prices })
+  );
+  out.setMimeType(ContentService.MimeType.JSON);
+  return out;
+}
+
+
+/**
+ * Helper: does column A already contain this date?
+ *
+ * Each weekly block writes the same date into all 23 rows, so the date
+ * appearing anywhere means that week is already recorded. Column A may hold
+ * real Date objects or strings depending on how the cell was formatted, so
+ * normalise both to yyyy-MM-dd before comparing.
+ */
+function dateAlreadyPresent(sheet, dateStr) {
+  const tz     = Session.getScriptTimeZone();
+  const values = sheet.getRange("A:A").getValues();
+
+  for (let i = values.length - 1; i >= 0; i--) {
+    const v = values[i][0];
+    if (v === "" || v === null) continue;
+
+    const asText = Object.prototype.toString.call(v) === "[object Date]"
+      ? Utilities.formatDate(v, tz, "yyyy-MM-dd")
+      : String(v).trim();
+
+    if (asText === dateStr) return true;
+  }
+  return false;
+}
+
 
 /**
  * Helper: read a range and return its display values + per-cell formatting,
@@ -162,6 +273,17 @@ function respond(code, message) {
  */
 function testDoGet() {
   const fakeEvent = { parameter: { token: SECRET_TOKEN } };
+  Logger.log(doGet(fakeEvent).getContent());
+}
+
+/**
+ * Manual test for action=prices — run in the Apps Script editor to confirm
+ * GOOGLEFINANCE resolves before wiring the MCP server up to it.
+ */
+function testResolvePrices() {
+  const fakeEvent = {
+    parameter: { token: SECRET_TOKEN, action: "prices", tickers: "VOO,VT,GLD" }
+  };
   Logger.log(doGet(fakeEvent).getContent());
 }
 

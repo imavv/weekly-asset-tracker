@@ -1,93 +1,180 @@
-# Context Handover — Weekly Asset Tracker Bot
+# Context Handover — Weekly Asset Tracker
 
-A Telegram bot that turns banking/brokerage screenshots into a weekly EOD
-portfolio snapshot row in a Google Sheet, using Claude (vision + web search) to
-parse the numbers.
+Turns banking/brokerage screenshots into a weekly EOD portfolio snapshot in a
+Google Sheet. Claude Desktop/mobile reads the screenshots; a remote **MCP
+server** on Vercel does all the arithmetic and writes to the sheet.
 
-**Status:** Deployed on Railway, running 24/7 as the sole Telegram poller
-(since 2026-06-21). Repo: `github.com/imavv/weekly-asset-tracker`, branch `main`.
+**Status:** migrating from the Telegram bot (Railway, retired) to the MCP
+server. Repo: `github.com/imavv/weekly-asset-tracker`.
 
 ---
 
 ## Architecture
 
 ```
- Telegram user
-      │  screenshots + /run [date] [model]
+ You, in Claude Desktop or mobile
+      │  screenshots + "update my tracker"
       ▼
- ┌──────────┐   buffers photos, whitelist, state      ┌────────────────────────┐
- │  bot.py  │ ───────────────────────────────────────▶│  portfolio_tracker.py  │
- │ (Telegram│   asyncio.to_thread(blocking work)       │       (engine)         │
- │ frontend)│◀─────────────────────────────────────── │                        │
- └──────────┘   preview + checks → /confirm            └───────────┬────────────┘
-      │  ▲                                                          │
-      │  │ summary images                          parse_screenshots│ write_rows
-      │  │                                          fetch_summary    │ (+ checks)
-      ▼  │                                                          ▼
- ┌──────────┐                                   ┌──────────┐   ┌──────────────────┐
- │ render.py│◀── sheet range ───────────────────│ Claude   │   │ Google Apps      │
- │ (PNG via │    (matplotlib, headless Agg)     │ API      │   │ Script web app   │
- │ mpl/Agg) │                                   │(vision + │   │ (/exec) → Sheet  │
- └──────────┘                                   │ web srch)│   └──────────────────┘
-                                                └──────────┘
+ ┌──────────────────┐   Claude reads the screenshots and reports
+ │  Claude + SKILL  │   OBSERVATIONS — no formulas, no row numbers
+ └────────┬─────────┘
+          │  MCP over Streamable HTTP (secret path in the URL)
+          ▼
+ ┌──────────────────────────────────────────────────────┐
+ │  MCP server  (Vercel, Python)                        │
+ │                                                      │
+ │  get_etf_prices   preview_snapshot                   │
+ │  get_today_wib    submit_snapshot  ← only writer     │
+ │                   get_summary                        │
+ │                                                      │
+ │  assemble.py  roster order, lots x100, holdings,     │
+ │               formulas, FX lock                      │
+ │  checks.py    completeness + price sanity            │
+ └────────┬─────────────────────────────────────────────┘
+          │  HTTPS + GAS_SECRET_TOKEN
+          ▼
+ ┌──────────────────┐
+ │  Apps Script     │  start_row · prices · summary · write
+ │  web app (/exec) │
+ └────────┬─────────┘
+          ▼
+     Google Sheet
 ```
 
-### Flow (one cycle)
-1. User sends screenshots → `bot.py` buffers them (in-memory).
-2. `/run [date] [model]` → `parse_screenshots()` calls Claude (vision + web
-   search) to read a 23-row portfolio table → `post_process_rows()` applies
-   holdings/lot math → `check_rows()` runs non-blocking sanity checks.
-3. Bot replies with a **preview + warnings** (does not write yet).
-4. `/confirm` → `write_rows()` POSTs to the GAS web app, which appends the block
-   to the Google Sheet.
-5. Bot auto-sends **two summary table images** (`fetch_summary()` → `render.py`).
+### Why it is shaped this way
+
+**Semantic tool arguments.** Claude sends `{"ticker": "VOO", "price_usd": 512.34}`,
+not an 11-column spreadsheet row. The server turns observations into the A–K
+grid. This makes "wrong row order" and "shifted columns" structurally impossible
+rather than something a validator has to catch afterwards, and lets JSON Schema
+reject malformed calls before any of our code runs.
+
+**Judgement to the model, arithmetic to the code.** Reading a blurry Superbank
+screenshot needs judgement. Multiplying lots by 100 does not — and a model doing
+deterministic work fails silently, where code fails loudly.
+
+**Prices resolved to static numbers.** `get_etf_prices` has Apps Script evaluate
+`GOOGLEFINANCE` in a hidden scratch tab and hand back plain numbers. Writing the
+live formula into column G would rewrite every past week's snapshot on each
+recalculation.
 
 ---
 
 ## File map
+
 | File | Role |
-|------|------|
-| `bot.py` | Telegram frontend — handlers, whitelist, in-memory state, `asyncio.to_thread`. |
-| `portfolio_tracker.py` | Engine — `parse_screenshots()`, `write_rows()`, `fetch_summary()`, model registry, `post_process_rows()`, `check_rows()`. |
-| `render.py` | Sheet range → PNG (matplotlib, headless Agg backend). |
-| `portfolio_gas.js` | Google Apps Script (deployed separately in Google; repo copy has placeholders). |
-| `SKILL.md` | Claude system prompt. |
-| `holdings.json` | Static ETF qty / avg cost. |
-| `requirements.txt` / `Procfile` | Deps (anthropic, requests, pandas, matplotlib) / `worker: python bot.py`. |
+|---|---|
+| `api/index.py` | Vercel entrypoint — exports the ASGI app |
+| `tracker/app.py` | Secret-path gate, transport wiring, per-request lifespan |
+| `tracker/server.py` | The five MCP tool definitions |
+| `tracker/models.py` | Semantic input schema (Pydantic → JSON Schema) |
+| `tracker/assemble.py` | Snapshot → 11-column A–K rows |
+| `tracker/checks.py` | Completeness and price-sanity validation |
+| `tracker/gas.py` | Apps Script client (async httpx) |
+| `tracker/config.py` | Env vars + the fixed 23-entry roster |
+| `holdings.json` | Static ETF share counts. **Edit + push to change** |
+| `portfolio_gas.js` | Apps Script source (deployed separately in Google) |
+| `SKILL.md` | Instructions for Claude |
+| `tests/` | 22 tests: assembly, validation, end-to-end over MCP |
+| `bot.py`, `render.py`, `portfolio_tracker.py` | **Retired** Telegram pipeline |
 
 ---
 
-## Deployment (Railway)
-- Auto-redeploys on push to `main`. Runs `Procfile` → `worker: python bot.py`.
-- **Required env vars:** `BOT_TOKEN`, `ALLOWED_USER_ID` (worker crashes without
-  these two), `ANTHROPIC_API_KEY`, `GAS_ENDPOINT`, `GAS_SECRET_TOKEN`,
-  `MODEL=sonnet`, `PYTHONUNBUFFERED=1`. All mirrored in local `.env` (gitignored).
-- **One poller per token:** never run a second instance (local + cloud) or
-  Telegram returns `409 Conflict`. To debug locally, stop Railway first.
+## Deployment
 
-### Gotchas
-- **Ephemeral state:** a redeploy/restart wipes `logs/`, buffered photos, and any
-  pending `/confirm`. Re-send screenshots after a restart.
-- **GAS edits need a NEW VERSION deploy** (Manage deployments → Edit → New
-  version) or `/exec` serves stale code. Keep the real `SPREADSHEET_ID` /
-  `SECRET_TOKEN` in the live script — repo copy is placeholders on purpose.
-- **Cold starts:** GAS first hit after idle can take >20s; `fetch_summary` retries.
+### 1. Apps Script
+Paste `portfolio_gas.js` into the sheet's Apps Script editor, filling in the real
+`SPREADSHEET_ID` and `SECRET_TOKEN`. Deploy → **New deployment** → Web App,
+execute as Me, access Anyone. Copy the `/exec` URL.
+
+> Edits need a **New version** deploy or `/exec` keeps serving stale code.
+
+Run `testResolvePrices` in the editor first to confirm GOOGLEFINANCE resolves.
+
+### 2. Vercel
+Import the repo, then set environment variables:
+
+| Variable | Value |
+|---|---|
+| `GAS_ENDPOINT` | the `/exec` URL |
+| `GAS_SECRET_TOKEN` | must match `SECRET_TOKEN` in the Apps Script |
+| `MCP_SECRET` | a long random string — `openssl rand -hex 32` |
+| `MCP_ALLOWED_HOSTS` | *(optional)* your Vercel hostname, to pin Host/Origin |
+
+### 3. Claude
+Settings → Connectors → Add custom connector:
+
+```
+https://<your-project>.vercel.app/api/mcp/<MCP_SECRET>
+```
+
+Added on claude.ai, it works on desktop and mobile both.
+
+**Keep `submit_snapshot` on manual approval.** It is the replacement for the old
+`/confirm` step — the tool is annotated `destructive_hint`, so clients should
+prompt by default. Do not tick "always allow" for it.
 
 ---
 
-## Models
-`/run [date] [model]` accepts `sonnet | opus | haiku`. **Use `sonnet`** —
-Haiku is unreliable for the strict 11-column format. Railway default is `sonnet`.
+## Security model
 
-## Open issues (non-blocking)
-- **No double-write guard:** a second `/confirm` appends a duplicate 23-row block
-  (inflates the W-0 summary). Possible fix: warn if the sheet's last row already
-  has today's date.
-- **Weak `GAS_SECRET_TOKEN`** (`REPLACE_WITH_YOUR_SECRET`) — rotate in both Apps
-  Script and Railway.
-- **`#DIV/0!`** in ETF column I when avg (H) = 0 (`holdings.json` avg=null). Cosmetic.
-- Sheet may contain leftover duplicate / corrupt `2026-06-21` test blocks — clean manually.
+- **The URL is the credential.** A bearer secret: whoever holds it can write to
+  the sheet. Unscoped, non-expiring, revocable only by rotating `MCP_SECRET` and
+  re-pasting the connector URL. Accepted deliberately — the blast radius is
+  appending rows to one spreadsheet. OAuth would fix the scoping but means
+  running an authorization server.
+- **`GAS_SECRET_TOKEN` never reaches the model.** It lives in Vercel env vars and
+  is injected by `tracker/gas.py`. It is never a tool argument, because tool
+  arguments land in the chat transcript. A test asserts it never appears in tool
+  output.
+- Bad secret returns **404**, not 403, so a scanner cannot tell the path exists.
+- Tickers are sanitised in both Python and Apps Script before being interpolated
+  into a `GOOGLEFINANCE` formula.
+
+---
+
+## Gotchas
+
+- **Vercel does not run ASGI lifespan events.** The MCP transport starts a task
+  group in its lifespan, so `tracker/app.py` builds a fresh transport app per
+  request and runs the lifespan around it. Safe because we run stateless. If you
+  ever switch to stateful sessions, this must be rethought.
+- **Cold starts.** Apps Script can take >20s after idle. `maxDuration` is 60s in
+  `vercel.json`; lower it if your plan rejects that.
+- **`holdings.json` is bundled into the deployment.** A buy or sell means edit +
+  push + redeploy. Claude cannot change it from chat.
+- **Duplicate writes** are blocked by a date guard in `doPost` — a second block
+  for a date already in column A returns 409 unless `force:true`.
+
+---
+
+## Open issues
+
+- **`SECRET_TOKEN` is still `REPLACE_WITH_YOUR_SECRET`** in the Apps Script, and
+  a real `/exec` URL was committed to this public repo in an earlier version of
+  `portfolio_tracker.py`. Rotate both the token and the deployment URL.
+- **This repo is public** and contains `holdings.json` (exact share counts) plus
+  10 real banking screenshots under `screenshots/`. Make it private, or at
+  minimum purge the screenshots.
+- **Summary images are gone** with `render.py`. `get_summary` returns markdown
+  tables instead of the formatted PNGs.
+- **No run log.** The Telegram pipeline wrote `logs/`; Vercel's filesystem is
+  ephemeral, so runs are only in Vercel's log stream.
+
+---
 
 ## Quick commands
-- CLI run (no Telegram): `python portfolio_tracker.py --model sonnet screenshots/*.jpg`
-- Local bot (debug only; stop Railway first): `python -u bot.py > /tmp/bot.log 2>&1 &` / `pkill -f bot.py`
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest anyio
+.venv/bin/python -m pytest tests/ -q          # 22 tests, no network needed
+
+# Inspect the server interactively
+MCP_SECRET=dev GAS_ENDPOINT=... GAS_SECRET_TOKEN=... \
+  npx @modelcontextprotocol/inspector
+# then connect to http://127.0.0.1:8000/api/mcp/dev via Streamable HTTP
+```
+
+To roll back to the Telegram bot: `pip install -r requirements-bot.txt` and
+restore the Railway worker. The Apps Script contract is unchanged, so both
+clients still work.
