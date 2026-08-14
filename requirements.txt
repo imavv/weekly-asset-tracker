@@ -1,6 +1,5 @@
-anthropic>=0.84.0
-requests>=2.32
-python-dotenv>=1.0
-python-telegram-bot>=21.0
-pandas>=2.0
-matplotlib>=3.7
+# Runtime dependencies for the MCP server (deployed to Vercel).
+# The retired Telegram bot's dependencies are in requirements-bot.txt.
+mcp>=1.9.0
+pydantic>=2.7
+httpx>=0.27
