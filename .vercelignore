@@ -1,0 +1,35 @@
+# What NOT to upload to Vercel.
+#
+# This matters for more than build size. With no framework detected, Vercel
+# treats the output directory as a static site — so anything left here can be
+# fetched from the deployment URL. `vercel.json` points the output directory at
+# an empty `public/`, and this file is the second layer: the screenshots and the
+# retired pipeline never reach the deployment at all.
+#
+# Do NOT add tracker/, holdings.json, api/, requirements.txt or vercel.json —
+# the function needs them.
+
+# Real banking screenshots. Never deploy these.
+screenshots/
+
+# Tests and local tooling
+tests/
+pytest.ini
+test_parse.py
+.venv/
+.pytest_cache/
+__pycache__/
+logs/
+
+# Retired Telegram pipeline — kept in the repo for rollback, unused at runtime
+bot.py
+render.py
+portfolio_tracker.py
+requirements-bot.txt
+Procfile
+
+# Source for the Apps Script side, deployed separately inside Google
+portfolio_gas.js
+
+# Docs — read on GitHub, not served
+*.md

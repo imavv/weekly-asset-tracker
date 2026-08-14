@@ -92,7 +92,26 @@ execute as Me, access Anyone. Copy the `/exec` URL.
 Run `testResolvePrices` in the editor first to confirm GOOGLEFINANCE resolves.
 
 ### 2. Vercel
-Import the repo, then set environment variables:
+Import the **whole repo** — Vercel deploys a Git repo plus branch, there is no
+file picker. What actually ships is narrowed by two files:
+
+- `.vercelignore` keeps `screenshots/`, the retired bot and the tests out of the
+  deployment entirely.
+- `vercel.json` sets `outputDirectory` to an empty `public/`, so Vercel has
+  nothing to serve statically. Left at the default it serves the repo root, and
+  every file in it becomes fetchable from the deployment URL.
+
+`includeFiles` still pulls `tracker/**` and `holdings.json` into the function
+bundle — those are runtime dependencies, not static assets.
+
+After the first deploy, confirm nothing leaked:
+
+```bash
+curl -so /dev/null -w '%{http_code}\n' https://<project>.vercel.app/holdings.json   # expect 404
+curl -s https://<project>.vercel.app/healthz                                        # expect ok
+```
+
+Then set environment variables:
 
 | Variable | Value |
 |---|---|

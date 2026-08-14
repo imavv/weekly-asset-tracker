@@ -1,0 +1,7 @@
+Intentionally empty.
+
+`vercel.json` sets this as the output directory so Vercel has nothing to serve
+statically. Without it, Vercel falls back to the repo root and publishes every
+file in it at the deployment URL.
+
+Everything this project serves goes through the MCP endpoint in api/index.py.
