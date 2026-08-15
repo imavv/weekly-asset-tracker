@@ -211,6 +211,55 @@ async def test_summary_renders_markdown(client):
     assert "| Cash | 500 |" in text
 
 
+@pytest.mark.anyio
+async def test_secret_accepted_in_query_string(client):
+    """Hosts that rewrite the path strip the secret segment; ?k= survives."""
+    async with client:
+        resp = await client.post(
+            "/api/index", params={"k": os.environ["MCP_SECRET"]}, headers=HEADERS,
+            json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+        )
+    assert resp.status_code == 200
+    assert unwrap(resp)["result"]["serverInfo"]["name"] == "weekly-asset-tracker"
+
+
+@pytest.mark.anyio
+async def test_wrong_query_secret_is_rejected(client):
+    async with client:
+        resp = await client.post("/api/index", params={"k": "nope"}, headers=HEADERS, json={})
+    assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_health_survives_a_rewritten_path(client):
+    async with client:
+        assert (await client.get("/healthz")).text == "ok"
+        assert (await client.get("/api/index/healthz")).text == "ok"
+        assert (await client.get("/api/index", params={"health": "1"})).text == "ok"
+
+
+@pytest.mark.anyio
+async def test_diagnostics_report_routing_without_leaking_the_secret(client):
+    async with client:
+        resp = await client.get(
+            "/api/index", params={"diag": "1", "k": os.environ["MCP_SECRET"]}
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["observed_path"] == "/api/index"
+    assert body["path_segments"] == ["api", "index"]
+    assert body["secret_supplied_in_query"] is True
+    # The value itself must never appear anywhere in the response.
+    assert os.environ["MCP_SECRET"] not in resp.text
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"

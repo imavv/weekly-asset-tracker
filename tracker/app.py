@@ -8,6 +8,11 @@ lives in the MCP_SECRET environment variable and is pasted into Claude's
 connector settings once. Unauthorised requests get 404 rather than 403, so a
 scanner cannot tell "wrong secret" from "nothing here".
 
+The secret is accepted either as a path segment or as the `k` query parameter.
+Vercel's catch-all rewrite replaces the request path before the function sees
+it, so a path-borne secret can vanish in transit; the query string survives.
+`?diag=1` reports how the URL actually arrived, without echoing the secret.
+
 **Lifespan.** The MCP transport starts a task group in its ASGI lifespan, and
 serverless hosts (Vercel among them) do not reliably emit lifespan events — the
 server would raise "Task group is not initialized" on the first call. Because we
@@ -20,8 +25,10 @@ avoids anyio's cross-task cancel-scope trap.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
+from urllib.parse import parse_qs
 
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -70,32 +77,50 @@ def build_transport_app():
     )
 
 
-async def _respond(send, status: int, body: bytes) -> None:
-    """Minimal ASGI response, used for 404s and the health check."""
+async def _respond(
+    send, status: int, body: bytes, content_type: bytes = b"text/plain; charset=utf-8"
+) -> None:
+    """Minimal ASGI response, used for 404s, health and diagnostics."""
     await send({
         "type": "http.response.start",
         "status": status,
         "headers": [
-            (b"content-type", b"text/plain; charset=utf-8"),
+            (b"content-type", content_type),
             (b"content-length", str(len(body)).encode()),
         ],
     })
     await send({"type": "http.response.body", "body": body})
 
 
-def _secret_in_path(path: str) -> bool:
-    """True if any path segment matches MCP_SECRET.
+def _authorised(path: str, query: dict[str, list[str]]) -> bool:
+    """True if MCP_SECRET appears as a path segment or as the `k` query param.
 
-    Matching on *any* segment rather than a fixed prefix keeps this working
-    regardless of how the host rewrites the incoming URL — Vercel's rewrite
-    rules, a trailing slash, or a stripped prefix all still resolve.
+    Both forms are accepted because hosts rewrite paths. Vercel's catch-all
+    rewrite replaces the request path before the function sees it, so a secret
+    carried in the path can disappear — the query string survives. Path form
+    stays supported for hosts that preserve it, and for local development.
 
     compare_digest avoids leaking the secret's length through timing.
     """
     secret = mcp_secret()
-    return any(
-        hmac.compare_digest(segment, secret) for segment in path.split("/") if segment
-    )
+    candidates = [seg for seg in path.split("/") if seg] + query.get("k", [])
+    return any(hmac.compare_digest(c, secret) for c in candidates)
+
+
+def _diagnostics(scope, path: str, query: dict[str, list[str]]) -> bytes:
+    """What the app actually received, for debugging host routing.
+
+    Deliberately excludes headers, environment and the secret itself — it
+    reports only how the URL arrived, so it is safe to leave unauthenticated.
+    """
+    return json.dumps({
+        "observed_path": path,
+        "path_segments": [seg for seg in path.split("/") if seg],
+        "query_keys": sorted(query),
+        "secret_supplied_in_query": bool(query.get("k")),
+        "method": scope.get("method"),
+        "root_path": scope.get("root_path", ""),
+    }, indent=2).encode()
 
 
 async def app(scope, receive, send):
@@ -104,12 +129,18 @@ async def app(scope, receive, send):
         return
 
     path: str = scope.get("path", "")
+    query = parse_qs(scope.get("query_string", b"").decode(), keep_blank_values=True)
 
-    # Unauthenticated liveness probe. Reveals nothing about the secret.
-    if path.rstrip("/") in ("/healthz", "/api/healthz"):
+    # Routing diagnostic: ?diag=1 on any path. Reveals no secrets.
+    if query.get("diag"):
+        return await _respond(send, 200, _diagnostics(scope, path, query), b"application/json")
+
+    # Unauthenticated liveness probe. Matches on the final segment, or ?health=1,
+    # so it survives a host rewriting the path prefix.
+    if path.rstrip("/").rsplit("/", 1)[-1] == "healthz" or query.get("health"):
         return await _respond(send, 200, b"ok")
 
-    if not _secret_in_path(path):
+    if not _authorised(path, query):
         log.warning("Rejected request with bad or missing secret")
         return await _respond(send, 404, b"Not Found")
 

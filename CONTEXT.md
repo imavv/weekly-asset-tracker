@@ -124,8 +124,16 @@ Then set environment variables:
 Settings → Connectors → Add custom connector:
 
 ```
-https://<your-project>.vercel.app/api/mcp/<MCP_SECRET>
+https://<your-project>.vercel.app/api/index?k=<MCP_SECRET>
 ```
+
+**Use the query-string form on Vercel.** The catch-all rewrite replaces the
+request path before the function sees it, so a secret carried in the path
+(`/api/mcp/<secret>`) is stripped in transit and every call 404s. The query
+string survives. Path form still works on hosts that preserve it, and locally.
+
+`?diag=1` on any path reports how the URL actually arrived — use it if routing
+misbehaves. It never echoes the secret.
 
 Added on claude.ai, it works on desktop and mobile both.
 
