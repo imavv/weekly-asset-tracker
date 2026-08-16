@@ -181,36 +181,50 @@ function resolvePrices(tickersParam) {
   }
   scratch.clearContents();
 
+  // No attribute argument: it defaults to "price" for securities, and currency
+  // pairs ("CURRENCY:CNYIDR") only accept the bare form. Passing "price" to a
+  // currency pair yields an error.
+  //
+  // No IFERROR either. It looks defensive but it converts the transient
+  // "Loading..." state into "", which the poll below then reads as "settled,
+  // no value" — so a cold symbol is reported unresolvable on the first pass.
   const formulas = tickers.map(function (t) {
-    return ['=IFERROR(GOOGLEFINANCE("' + t + '","price"),"")'];
+    return ['=GOOGLEFINANCE("' + t + '")'];
   });
   const range = scratch.getRange(1, 1, formulas.length, 1);
   range.setFormulas(formulas);
   SpreadsheetApp.flush();
 
-  // GOOGLEFINANCE resolves asynchronously and shows "Loading..." meanwhile.
-  // Poll until every cell has settled, or we run out of patience.
+  // Poll until every cell holds an actual number. A cell still loading, or in
+  // an error state, is not a number — so this waits out the fetch and gives up
+  // only on something genuinely unavailable.
   let values = range.getValues();
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const stillLoading = values.some(function (r) {
-      return String(r[0]).indexOf("Loading") === 0;
-    });
-    if (!stillLoading) break;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    const pending = values.some(function (r) { return typeof r[0] !== "number"; });
+    if (!pending) break;
     Utilities.sleep(1000);
     SpreadsheetApp.flush();
     values = range.getValues();
   }
 
+  // Anything that did not settle to a positive number is reported back with
+  // whatever the cell actually held ("#N/A", "Loading...", ""), so a failure is
+  // diagnosable from the tool output instead of silently absent.
   const prices = {};
+  const unresolved = {};
   tickers.forEach(function (t, i) {
     const v = values[i] ? values[i][0] : "";
-    if (typeof v === "number" && v > 0) prices[t] = v;
+    if (typeof v === "number" && v > 0) {
+      prices[t] = v;
+    } else {
+      unresolved[t] = String(v) || "(blank)";
+    }
   });
 
   scratch.clearContents();
 
   const out = ContentService.createTextOutput(
-    JSON.stringify({ status: 200, prices: prices })
+    JSON.stringify({ status: 200, prices: prices, unresolved: unresolved })
   );
   out.setMimeType(ContentService.MimeType.JSON);
   return out;

@@ -68,17 +68,24 @@ async def fetch_summary() -> dict:
     return {"trend": body["trend"], "breakdown": body["breakdown"]}
 
 
-async def fetch_prices(tickers: list[str]) -> dict[str, float]:
-    """Resolve tickers to static prices via GOOGLEFINANCE inside the sheet.
+async def fetch_prices(tickers: list[str]) -> tuple[dict[str, float], dict[str, str]]:
+    """Resolve symbols to static prices via GOOGLEFINANCE inside the sheet.
 
     The Apps Script writes formulas to a hidden scratch sheet, waits for them to
     settle, reads the computed numbers, then clears it. We get Google's price
     data as plain numbers — so column G holds a fixed value that will not
     rewrite itself when the sheet recalculates next month.
+
+    Returns (prices, unresolved). `unresolved` maps a symbol to whatever the
+    cell actually held ("#N/A", "Loading...", "(blank)"), so a failure can be
+    diagnosed from the tool output rather than just going missing.
     """
     body = await _get({"action": "prices", "tickers": ",".join(tickers)})
-    prices = body.get("prices", {})
-    return {k: float(v) for k, v in prices.items() if v not in ("", None)}
+    prices = {
+        k: float(v) for k, v in body.get("prices", {}).items() if v not in ("", None)
+    }
+    unresolved = {k: str(v) for k, v in body.get("unresolved", {}).items()}
+    return prices, unresolved
 
 
 async def fetch_usdidr() -> float | None:
