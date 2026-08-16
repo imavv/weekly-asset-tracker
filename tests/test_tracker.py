@@ -13,8 +13,10 @@ import pytest
 
 from tracker.assemble import assemble_rows
 from tracker.checks import check_snapshot
-from tracker.config import BANK_ACCOUNTS, ETF_TICKERS, NUM_COLS, ROSTER, STOCK_TICKERS
-from tracker.models import BankBalance, EtfHolding, Snapshot, StockHolding
+from tracker.config import (
+    BANK_ACCOUNTS, ETF_TICKERS, FX_CURRENCIES, NUM_COLS, ROSTER, STOCK_TICKERS,
+)
+from tracker.models import BankBalance, EtfHolding, FxHolding, Snapshot, StockHolding
 
 START_ROW = 1600
 FX = 16250.0
@@ -32,6 +34,7 @@ def make_snapshot(**overrides) -> Snapshot:
             StockHolding(ticker="BBRI", lots=25, price_idr=4200, avg_idr=4000),
         ],
         "etfs": [EtfHolding(ticker=t, price_usd=100.0) for t in ETF_TICKERS],
+        "fx": [FxHolding(currency=c, rate_idr=1000.0) for c in FX_CURRENCIES],
     }
     data.update(overrides)
     return Snapshot(**data)
@@ -42,7 +45,7 @@ def make_snapshot(**overrides) -> Snapshot:
 def test_block_shape_and_order():
     rows = assemble_rows(make_snapshot(), START_ROW, FX)
 
-    assert len(rows) == len(ROSTER) == 23
+    assert len(rows) == len(ROSTER) == 29
     assert all(len(r) == NUM_COLS for r in rows)
     # Order comes from ROSTER, so it cannot drift.
     assert [r[2] for r in rows] == list(ROSTER)
@@ -133,6 +136,55 @@ def test_bank_balances_are_written_as_plain_integers():
     assert next(r for r in rows if r[2] == "Bibit")[1] == "MF Bonds"
 
 
+def test_fx_rows_use_a_plain_product_with_no_anchor():
+    """Column G is IDR per unit, so FX needs no $K$ conversion."""
+    rows = assemble_rows(make_snapshot(), START_ROW, FX)
+    idx = ROSTER.index("USD")
+    r = START_ROW + idx
+
+    assert rows[idx][1] == "FX"
+    assert rows[idx][3] == f"=F{r}*G{r}"
+    assert "$K$" not in rows[idx][3]
+    assert rows[idx][6] == 1000.0
+
+
+def test_fx_amount_comes_from_holdings():
+    rows = assemble_rows(make_snapshot(), START_ROW, FX)
+
+    assert next(r for r in rows if r[2] == "JPY")[5] == 28749.11
+    assert next(r for r in rows if r[2] == "CNY")[5] == 17375.69
+
+
+def test_fx_values_reproduce_the_real_sheet():
+    """Regression against the block written on 2026-08-10 (rows 1843-1847)."""
+    observed = {
+        "CNY": (17375.69, 2638.123, 45_839_207),
+        "USD": (5142.44, 17801.0, 91_540_574),
+        "SGD": (2181.52, 13924.27, 30_376_073),
+        "AUD": (586.71, 12579.08, 7_380_272),
+        "JPY": (28749.11, 112.7763, 3_242_218),
+    }
+    snap = make_snapshot(
+        fx=[FxHolding(currency=c, rate_idr=rate) for c, (_, rate, _) in observed.items()]
+    )
+    rows = assemble_rows(snap, START_ROW, FX)
+
+    for currency, (qty, rate, value) in observed.items():
+        row = next(r for r in rows if r[2] == currency)
+        assert row[5] == qty, currency          # F from holdings.json
+        assert row[6] == rate, currency         # G as supplied
+        assert abs(row[5] * row[6] - value) < 2, currency  # what Sheets computes
+
+
+def test_stockbit_rdn_is_in_the_roster_before_bni():
+    rows = assemble_rows(make_snapshot(), START_ROW, FX)
+    accounts = [r[2] for r in rows]
+
+    assert accounts.index("Stockbit (RDN)") == accounts.index("Bibit") + 1
+    assert accounts.index("BNI (RDN)") == accounts.index("Stockbit (RDN)") + 1
+    assert next(r for r in rows if r[2] == "Stockbit (RDN)")[1] == "Cash"
+
+
 # ── Validation ───────────────────────────────────────────────────────────────
 
 def test_complete_snapshot_passes():
@@ -168,6 +220,24 @@ def test_price_far_from_cost_basis_warns_without_blocking():
 
     assert result["errors"] == []
     assert any("BBCA" in w and "+153%" in w for w in result["warnings"])
+
+
+def test_missing_currency_is_an_error():
+    partial = [FxHolding(currency=c, rate_idr=1000.0) for c in FX_CURRENCIES[:-1]]
+    result = check_snapshot(make_snapshot(fx=partial))
+
+    assert any("Missing currency" in e for e in result["errors"])
+    assert any(FX_CURRENCIES[-1] in e for e in result["errors"])
+
+
+def test_inverted_fx_rate_warns():
+    """USD/IDR reported as 0.000056 instead of ~17800 would zero the holding."""
+    inverted = [FxHolding(currency=c, rate_idr=1000.0) for c in FX_CURRENCIES]
+    inverted[0] = FxHolding(currency=FX_CURRENCIES[0], rate_idr=0.000056)
+    result = check_snapshot(make_snapshot(fx=inverted))
+
+    assert result["errors"] == []
+    assert any("looks inverted" in w for w in result["warnings"])
 
 
 def test_zero_balance_warns():

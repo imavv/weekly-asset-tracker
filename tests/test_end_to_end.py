@@ -162,15 +162,15 @@ async def test_submit_writes_a_correct_block(client):
     assert payload["force"] is False
 
     rows = payload["rows"]
-    assert len(rows) == 23
+    assert len(rows) == 29
     assert all(len(r) == 11 for r in rows)
     assert rows[0][2] == "Mandiri"
     assert rows[0][10] == 16250.0                  # FX locked on first row only
-    assert rows[-1][2] == "XLE"
+    assert rows[-1][2] == "JPY"
 
     bbca = next(r for r in rows if r[2] == "BBCA")
     assert bbca[5] == 4400                          # 44 lots -> shares
-    assert bbca[3] == f"=F{START_ROW + 8}*G{START_ROW + 8}"
+    assert bbca[3] == f"=F{START_ROW + 9}*G{START_ROW + 9}"
 
 
 @pytest.mark.anyio
@@ -194,7 +194,7 @@ async def test_secret_is_never_exposed_to_the_model(client):
             client, "preview_snapshot",
             {"snapshot": make_snapshot().model_dump()},
         )
-        prices = await call_tool(client, "get_etf_prices", {})
+        prices = await call_tool(client, "get_market_data", {})
 
     assert "test-gas-token" not in preview
     assert "test-gas-token" not in prices

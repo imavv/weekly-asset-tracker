@@ -44,16 +44,19 @@ If a screenshot is missing or unreadable, use `0` and **tell the user which
 accounts you zero-filled** before previewing. Never silently drop an account —
 every roster entry must be supplied.
 
-### Step 3 — Get ETF prices
-Call `get_etf_prices`. It resolves prices inside the sheet itself and returns
-plain numbers. Use them verbatim.
+### Step 3 — Get market data
+Call `get_market_data`. It resolves ETF prices **and** foreign-currency rates
+inside the sheet itself and returns plain numbers. Use them verbatim.
 
-Do **not** web-search ETF prices. Do not carry prices forward from a previous
-week. If the tool reports a ticker with no price, ask the user rather than
-guessing.
+Do **not** web-search prices or rates. Do not carry values forward from a
+previous week. If the tool reports something it could not resolve, ask the user
+rather than guessing.
 
-IDX stock prices are different — read those off the broker screenshot, which is
-the source of truth for BBCA, ICBP and BBRI.
+Two things it does not cover:
+- **IDX stock prices** — read those off the broker screenshot, which is the
+  source of truth for BBCA, ICBP and BBRI.
+- **How much foreign currency is held** — that lives in `holdings.json` on the
+  server. You supply only the rate.
 
 ### Step 4 — Preview
 Call `preview_snapshot` and **show the user the result**. It reports the exact
@@ -84,7 +87,8 @@ Call `get_summary` and show the updated trend and breakdown tables.
 | Stock `lots` | broker screenshot | **RAW lot count** as displayed. Do NOT multiply by 100 |
 | Stock `price_idr` | broker screenshot | Last price, IDR |
 | Stock `avg_idr` | prior week / user | Cost basis; carry forward unless the user says it changed |
-| ETF `price_usd` | `get_etf_prices` | USD, verbatim from the tool |
+| ETF `price_usd` | `get_market_data` | USD per share, verbatim from the tool |
+| FX `rate_idr` | `get_market_data` | **IDR per ONE unit** of the currency (~17800 for USD, ~113 for JPY) |
 
 ---
 
@@ -101,12 +105,17 @@ Every one of these must appear in the snapshot.
 | Superbank | Tabungan Utama balance |
 | Superbank Deposit | Detail Deposito balance |
 | Bibit | Nilai Portofolio total |
+| Stockbit (RDN) | Cash / RDN balance in the Stockbit app |
 | BNI (RDN) | Cash Settlement End Balance |
 | Ajaib | Buying Power, in USD |
 | BBCA / ICBP / BBRI | Broker screenshot: lots + last price |
-| VOO, VT, VTI, SPYM, GDX, VEA, SMH, GLD, IGV, XLP, XLE | `get_etf_prices` |
+| VOO, VT, VTI, SPYM, GDX, VEA, SMH, GLD, IGV, XLP, XLE | `get_market_data` |
+| CNY, USD, SGD, AUD, JPY | `get_market_data` — rate only |
 
-**Bibit (RDN)** is negligible — skip it. It is not the same as **Bibit**.
+**Bibit (RDN)** is negligible — skip it. It is not the same as **Bibit**, and it
+is not **Stockbit (RDN)**, which *is* tracked.
+
+The block is **29 rows** in the order above.
 
 ---
 
@@ -116,9 +125,12 @@ Every one of these must appear in the snapshot.
 - **Ambiguous balance** — if a screenshot shows several plausible figures, ask.
 - **US market closed** — expected when running in the WIB morning. The prior
   session's close is the correct value for an EOD snapshot.
-- **Quantity changed** — ETF share counts live in `holdings.json` in the repo,
-  not in this conversation. If the user says they bought or sold an ETF, tell
-  them to update that file and redeploy; you cannot override it from chat.
+- **Quantity changed** — ETF share counts and foreign-currency amounts live in
+  `holdings.json` in the repo, not in this conversation. If the user says they
+  bought or sold, or moved money between currencies, tell them to update that
+  file and redeploy; you cannot override it from chat.
+- **Inverted FX rate** — the rate is IDR per one unit of the foreign currency.
+  A value below 1 is almost certainly upside down; the preview warns about it.
 - **New account** — the roster is fixed in the server's schema. A new account
   needs a code change, so tell the user rather than trying to squeeze it in.
 - **Large price move** — the preview warns when a price is more than 30% from

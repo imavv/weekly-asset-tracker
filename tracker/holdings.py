@@ -19,7 +19,11 @@ log = logging.getLogger(__name__)
 
 
 def load_holdings() -> dict[str, dict]:
-    """Return {ticker: {"qty": float, "avg": float | None}}.
+    """Return {symbol: {"qty": float, "avg": float | None}}.
+
+    The file is grouped into "etfs" and "fx" sections so it stays readable when
+    hand-edited; this flattens them into one lookup. ETF tickers and currency
+    codes never collide, so a flat namespace is safe.
 
     Returns {} if the file is missing so the server still starts; callers then
     surface a validation error rather than writing zeroed quantities.
@@ -29,5 +33,12 @@ def load_holdings() -> dict[str, dict]:
         return {}
 
     raw = json.loads(HOLDINGS_PATH.read_text(encoding="utf-8"))
-    # Skip "_comment" and any other non-dict bookkeeping keys.
-    return {k: v for k, v in raw.items() if isinstance(v, dict)}
+
+    flat: dict[str, dict] = {}
+    for section, entries in raw.items():
+        if section.startswith("_") or not isinstance(entries, dict):
+            continue  # skips "_comment"
+        for symbol, holding in entries.items():
+            if isinstance(holding, dict):
+                flat[symbol] = holding
+    return flat

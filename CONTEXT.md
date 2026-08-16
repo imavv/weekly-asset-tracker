@@ -23,7 +23,7 @@ server. Repo: `github.com/imavv/weekly-asset-tracker`.
  ┌──────────────────────────────────────────────────────┐
  │  MCP server  (Vercel, Python)                        │
  │                                                      │
- │  get_etf_prices   preview_snapshot                   │
+ │  get_market_data  preview_snapshot                   │
  │  get_today_wib    submit_snapshot  ← only writer     │
  │                   get_summary                        │
  │                                                      │
@@ -53,10 +53,14 @@ reject malformed calls before any of our code runs.
 screenshot needs judgement. Multiplying lots by 100 does not — and a model doing
 deterministic work fails silently, where code fails loudly.
 
-**Prices resolved to static numbers.** `get_etf_prices` has Apps Script evaluate
-`GOOGLEFINANCE` in a hidden scratch tab and hand back plain numbers. Writing the
-live formula into column G would rewrite every past week's snapshot on each
-recalculation.
+**Prices resolved to static numbers.** `get_market_data` has Apps Script
+evaluate `GOOGLEFINANCE` in a hidden scratch tab and hand back plain numbers,
+for both ETF prices and `CURRENCY:XXXIDR` pairs. Writing the live formula into
+column G would rewrite every past week's snapshot on each recalculation.
+
+**The roster is 29 rows.** Cash/Deposit/MF Bonds (9), IDX stocks (3), Ajaib,
+US ETFs (11), and FX currencies (5). ETF value formulas convert USD via the
+`$K$` anchor; FX rows do not, because column G already holds IDR per unit.
 
 ---
 
@@ -71,11 +75,11 @@ recalculation.
 | `tracker/assemble.py` | Snapshot → 11-column A–K rows |
 | `tracker/checks.py` | Completeness and price-sanity validation |
 | `tracker/gas.py` | Apps Script client (async httpx) |
-| `tracker/config.py` | Env vars + the fixed 23-entry roster |
-| `holdings.json` | Static ETF share counts. **Edit + push to change** |
+| `tracker/config.py` | Env vars + the fixed 29-entry roster |
+| `holdings.json` | Static ETF share counts + FX amounts. **Edit + push to change** |
 | `portfolio_gas.js` | Apps Script source (deployed separately in Google) |
 | `SKILL.md` | Instructions for Claude |
-| `tests/` | 22 tests: assembly, validation, end-to-end over MCP |
+| `tests/` | 32 tests: assembly, validation, end-to-end over MCP |
 | `bot.py`, `render.py`, `portfolio_tracker.py` | **Retired** Telegram pipeline |
 
 ---
@@ -194,7 +198,7 @@ prompt by default. Do not tick "always allow" for it.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest anyio
-.venv/bin/python -m pytest tests/ -q          # 22 tests, no network needed
+.venv/bin/python -m pytest tests/ -q          # 32 tests, no network needed
 
 # Inspect the server interactively
 MCP_SECRET=dev GAS_ENDPOINT=... GAS_SECRET_TOKEN=... \
