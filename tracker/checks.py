@@ -18,6 +18,7 @@ from __future__ import annotations
 from .config import (
     BANK_ACCOUNTS,
     ETF_TICKERS,
+    FX_CURRENCIES,
     PRICE_DEVIATION_THRESHOLD,
     STOCK_TICKERS,
 )
@@ -35,6 +36,7 @@ def check_snapshot(snap: Snapshot) -> dict[str, list[str]]:
         ("bank account", set(BANK_ACCOUNTS), [b.account for b in snap.banks]),
         ("stock", set(STOCK_TICKERS), [s.ticker for s in snap.stocks]),
         ("ETF", set(ETF_TICKERS), [e.ticker for e in snap.etfs]),
+        ("currency", set(FX_CURRENCIES), [f.currency for f in snap.fx]),
     ):
         missing = expected - set(got)
         if missing:
@@ -53,7 +55,7 @@ def check_snapshot(snap: Snapshot) -> dict[str, list[str]]:
             "holdings.json is missing or empty — ETF quantities would all be 0."
         )
     else:
-        unlisted = [t for t in ETF_TICKERS if t not in holdings]
+        unlisted = [t for t in (*ETF_TICKERS, *FX_CURRENCIES) if t not in holdings]
         if unlisted:
             errors.append(
                 f"holdings.json has no entry for: {', '.join(unlisted)} — "
@@ -92,6 +94,18 @@ def check_snapshot(snap: Snapshot) -> dict[str, list[str]]:
                     f"{e.ticker}: price {e.price_usd} vs avg {avg} "
                     f"({pct:+.0f}%) — verify it is not stale or misread."
                 )
+
+    # ── Advisory: FX rates in a plausible IDR-per-unit range ─────────────
+    # The classic mistake is an inverted rate (USD/IDR reported as 0.000056
+    # instead of ~17800), which would silently value the holding at nothing.
+    for f in snap.fx:
+        if f.rate_idr == 0:
+            warnings.append(f"{f.currency}: rate is 0 — value will be 0.")
+        elif f.rate_idr < 1:
+            warnings.append(
+                f"{f.currency}: rate {f.rate_idr} looks inverted — column G must "
+                "be IDR per one unit of the currency, not the other way round."
+            )
 
     return {"errors": errors, "warnings": warnings}
 

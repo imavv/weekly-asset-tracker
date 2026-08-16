@@ -15,13 +15,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from .config import BANK_ACCOUNTS, ETF_TICKERS, STOCK_TICKERS
+from .config import BANK_ACCOUNTS, ETF_TICKERS, FX_CURRENCIES, STOCK_TICKERS
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 BankAccountName = Literal[BANK_ACCOUNTS]  # type: ignore[valid-type]
 StockTicker = Literal[STOCK_TICKERS]  # type: ignore[valid-type]
 EtfTicker = Literal[ETF_TICKERS]  # type: ignore[valid-type]
+FxCurrency = Literal[FX_CURRENCIES]  # type: ignore[valid-type]
 
 
 class BankBalance(BaseModel):
@@ -73,6 +74,22 @@ class EtfHolding(BaseModel):
     price_usd: float = Field(ge=0, description="Share price in USD, 2 decimals.")
 
 
+class FxHolding(BaseModel):
+    """A foreign-currency balance. Only the rate is supplied.
+
+    The amount held comes from holdings.json — the model must not guess it.
+    """
+
+    currency: FxCurrency = Field(description="Currency code.")
+    rate_idr: float = Field(
+        ge=0,
+        description=(
+            "Exchange rate in IDR per ONE unit of this currency (e.g. ~17800 "
+            "for USD, ~113 for JPY). Take it verbatim from get_market_data."
+        ),
+    )
+
+
 class Snapshot(BaseModel):
     """One complete weekly EOD portfolio snapshot."""
 
@@ -94,6 +111,9 @@ class Snapshot(BaseModel):
     )
     etfs: list[EtfHolding] = Field(
         description=f"All {len(ETF_TICKERS)} US ETF prices."
+    )
+    fx: list[FxHolding] = Field(
+        description=f"All {len(FX_CURRENCIES)} foreign-currency exchange rates."
     )
 
     @field_validator("date")

@@ -1,8 +1,9 @@
 """MCP tool definitions — the server half of the conversation.
 
-Four tools, deliberately split so the write is never a surprise:
+Five tools, deliberately split so the write is never a surprise:
 
-    get_etf_prices     read-only   fetch prices before building a snapshot
+    get_today_wib      read-only   the snapshot date, in the user's timezone
+    get_market_data    read-only   ETF prices + FX rates, before building
     preview_snapshot   read-only   assemble + validate, show it, write nothing
     submit_snapshot    WRITES      the only tool that touches the sheet
     get_summary        read-only   dashboard tables after a write
@@ -21,7 +22,7 @@ from mcp.types import ToolAnnotations
 from . import gas
 from .assemble import assemble_rows, format_preview
 from .checks import check_snapshot, format_checks
-from .config import ETF_TICKERS, today_wib
+from .config import ETF_TICKERS, FX_CURRENCIES, googlefinance_symbol, today_wib
 from .models import Snapshot
 
 log = logging.getLogger(__name__)
@@ -31,11 +32,13 @@ mcp = MCPServer(
     version="1.0.0",
     instructions=(
         "Writes a weekly EOD portfolio snapshot to the user's Google Sheet.\n\n"
-        "Workflow: call get_today_wib for the date, get_etf_prices for ETF "
-        "prices, then preview_snapshot and SHOW THE RESULT TO THE USER. Only "
-        "call submit_snapshot after they confirm. Report every number you read "
-        "off a screenshot; the server computes all quantities, formulas and "
-        "row positions itself."
+        "Workflow: call get_today_wib for the date, get_market_data for ETF "
+        "prices and FX rates, then preview_snapshot and SHOW THE RESULT TO THE "
+        "USER. Only call submit_snapshot after they confirm.\n\n"
+        "Report every number you read off a screenshot; the server computes all "
+        "quantities, formulas and row positions itself. Never supply share "
+        "counts, currency amounts, spreadsheet formulas or row numbers — "
+        "quantities come from holdings.json on the server."
     ),
 )
 
@@ -46,20 +49,39 @@ WRITES = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent
 
 
 @mcp.tool(annotations=READ_ONLY)
-async def get_etf_prices() -> str:
-    """Fetch current prices for all tracked US ETFs.
+async def get_market_data() -> str:
+    """Fetch current US ETF prices and foreign-currency exchange rates.
 
     Resolves GOOGLEFINANCE inside the Google Sheet and returns plain numbers,
-    so no web search is needed. Call this before preview_snapshot and use the
-    returned prices verbatim.
-    """
-    prices = await gas.fetch_prices(list(ETF_TICKERS))
+    so no web search is needed. Call this once before preview_snapshot and use
+    the returned figures verbatim — do not round them or carry values forward
+    from a previous week.
 
-    lines = [f"{t:<6} {prices[t]:>10.2f}" for t in ETF_TICKERS if t in prices]
-    missing = [t for t in ETF_TICKERS if t not in prices]
+    ETF prices are USD per share. FX rates are IDR per ONE unit of the currency.
+    """
+    symbols = [googlefinance_symbol(n) for n in (*ETF_TICKERS, *FX_CURRENCIES)]
+    resolved = await gas.fetch_prices(symbols)
+
+    lines = ["ETF prices (USD per share):"]
+    missing: list[str] = []
+    for ticker in ETF_TICKERS:
+        value = resolved.get(googlefinance_symbol(ticker))
+        if value is None:
+            missing.append(ticker)
+        else:
+            lines.append(f"  {ticker:<6} {value:>12.2f}")
+
+    lines.append("")
+    lines.append("FX rates (IDR per 1 unit):")
+    for currency in FX_CURRENCIES:
+        value = resolved.get(googlefinance_symbol(currency))
+        if value is None:
+            missing.append(currency)
+        else:
+            lines.append(f"  {currency:<6} {value:>12.4f}")
+
     if missing:
-        lines.append("")
-        lines.append(f"NO PRICE RETURNED for: {', '.join(missing)} — ask the user.")
+        lines += ["", f"NOT RESOLVED: {', '.join(missing)} — ask the user for these."]
     return "\n".join(lines)
 
 

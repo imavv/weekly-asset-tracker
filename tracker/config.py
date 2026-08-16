@@ -62,6 +62,7 @@ BANK_ACCOUNTS: tuple[str, ...] = (
     "Superbank",
     "Superbank Deposit",
     "Bibit",
+    "Stockbit (RDN)",
     "BNI (RDN)",
 )
 
@@ -74,6 +75,11 @@ ETF_TICKERS: tuple[str, ...] = (
     "SMH", "GLD", "IGV", "XLP", "XLE",
 )
 
+# Foreign currency balances. Rate resolved via GOOGLEFINANCE, amount held from
+# holdings.json. Column G is IDR per unit, so value is simply F*G — no $K$
+# anchor, unlike ETFs whose prices are quoted in USD.
+FX_CURRENCIES: tuple[str, ...] = ("CNY", "USD", "SGD", "AUD", "JPY")
+
 # Category per account. Ajaib is Cash even though its value is a USD formula.
 CATEGORY: dict[str, str] = {
     "Mandiri": "Cash",
@@ -83,10 +89,12 @@ CATEGORY: dict[str, str] = {
     "Superbank": "Cash",
     "Superbank Deposit": "Deposit",
     "Bibit": "MF Bonds",
+    "Stockbit (RDN)": "Cash",
     "BNI (RDN)": "Cash",
     "Ajaib": "Cash",
     **{t: "Stock" for t in STOCK_TICKERS},
     **{t: "ETF" for t in ETF_TICKERS},
+    **{c: "FX" for c in FX_CURRENCIES},
 }
 
 # THE ROSTER — the exact order of rows in every weekly block.
@@ -100,11 +108,23 @@ ROSTER: tuple[str, ...] = (
     "Superbank",
     "Superbank Deposit",
     "Bibit",
+    "Stockbit (RDN)",
     "BNI (RDN)",
     *STOCK_TICKERS,
     "Ajaib",
     *ETF_TICKERS,
+    *FX_CURRENCIES,
 )
+
+
+def googlefinance_symbol(name: str) -> str:
+    """The symbol to hand GOOGLEFINANCE for a roster entry.
+
+    ETFs use the bare ticker; currencies need the CURRENCY:XXXIDR form.
+    """
+    if name in FX_CURRENCIES:
+        return f"CURRENCY:{name}IDR"
+    return name
 
 SHARES_PER_LOT = 100  # IDX convention: 1 lot = 100 shares
 FX_FORMULA = '=GOOGLEFINANCE("CURRENCY:USDIDR")'

@@ -23,6 +23,7 @@ import logging
 from .config import (
     CATEGORY,
     ETF_TICKERS,
+    FX_CURRENCIES,
     FX_FORMULA,
     NUM_COLS,
     ROSTER,
@@ -71,6 +72,7 @@ def assemble_rows(snap: Snapshot, start_row: int, fx_rate: float | None) -> list
     banks = {b.account: b.value_idr for b in snap.banks}
     stocks = {s.ticker: s for s in snap.stocks}
     etfs = {e.ticker: e for e in snap.etfs}
+    fx = {f.currency: f for f in snap.fx}
     holdings = load_holdings()
 
     anchor = start_row  # column K of the first row holds this block's FX rate
@@ -99,6 +101,20 @@ def assemble_rows(snap: Snapshot, start_row: int, fx_rate: float | None) -> list
                 row[5] = qty if qty is not None else 0    # F — from holdings.json
                 row[6] = e.price_usd                      # G
                 row[7] = avg if avg is not None else 0    # H — from holdings.json
+                _change_formulas(row, r, avg or 0)
+
+        elif account in FX_CURRENCIES:
+            f = fx.get(account)
+            h = holdings.get(account, {})
+            qty = h.get("qty")
+            avg = h.get("avg")
+            if f is not None:
+                # Column G is IDR per unit, so no $K$ conversion is needed —
+                # unlike ETFs, whose prices are quoted in USD.
+                row[3] = f"=F{r}*G{r}"                    # D
+                row[5] = qty if qty is not None else 0    # F — from holdings.json
+                row[6] = f.rate_idr                       # G — IDR per unit
+                row[7] = avg if avg is not None else 0    # H
                 _change_formulas(row, r, avg or 0)
 
         elif account == "Ajaib":
@@ -130,7 +146,7 @@ def format_preview(rows: list[Row], start_row: int) -> str:
     for i, row in enumerate(rows):
         r = start_row + i
         category, account = row[1], row[2]
-        if category in ("Stock", "ETF"):
+        if category in ("Stock", "ETF", "FX"):
             detail = f"{row[5]} x {row[6]}"
         else:
             detail = f"{row[3]:,}" if isinstance(row[3], int) else str(row[3])

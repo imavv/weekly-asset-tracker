@@ -163,10 +163,11 @@ function doPost(e) {
 function resolvePrices(tickersParam) {
   // Sanitise hard: these strings are interpolated into a formula, and they
   // originate from a language model. Allow only ticker-shaped input.
+  // Accepts bare tickers ("VOO") and currency pairs ("CURRENCY:CNYIDR").
   const tickers = String(tickersParam || "")
     .split(",")
     .map(function (t) { return t.trim().toUpperCase(); })
-    .filter(function (t) { return /^[A-Z0-9.:-]{1,15}$/.test(t); });
+    .filter(function (t) { return /^[A-Z0-9.:-]{1,24}$/.test(t); });
 
   if (!tickers.length) {
     return respond(400, "No valid tickers supplied");
@@ -282,7 +283,11 @@ function testDoGet() {
  */
 function testResolvePrices() {
   const fakeEvent = {
-    parameter: { token: SECRET_TOKEN, action: "prices", tickers: "VOO,VT,GLD" }
+    parameter: {
+      token: SECRET_TOKEN,
+      action: "prices",
+      tickers: "VOO,VT,GLD,CURRENCY:USDIDR,CURRENCY:JPYIDR"
+    }
   };
   Logger.log(doGet(fakeEvent).getContent());
 }
