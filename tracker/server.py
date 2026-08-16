@@ -60,7 +60,7 @@ async def get_market_data() -> str:
     ETF prices are USD per share. FX rates are IDR per ONE unit of the currency.
     """
     symbols = [googlefinance_symbol(n) for n in (*ETF_TICKERS, *FX_CURRENCIES)]
-    resolved = await gas.fetch_prices(symbols)
+    resolved, unresolved = await gas.fetch_prices(symbols)
 
     lines = ["ETF prices (USD per share):"]
     missing: list[str] = []
@@ -82,6 +82,10 @@ async def get_market_data() -> str:
 
     if missing:
         lines += ["", f"NOT RESOLVED: {', '.join(missing)} — ask the user for these."]
+        # Show what the sheet actually held, so the cause is visible rather
+        # than the symbol just going missing.
+        for symbol, cell in unresolved.items():
+            lines.append(f"    {symbol} -> {cell}")
     return "\n".join(lines)
 
 

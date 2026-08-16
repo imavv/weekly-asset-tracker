@@ -50,7 +50,15 @@ class FakeGas(BaseHTTPRequestHandler):
 
         if action == "prices":
             tickers = params["tickers"][0].split(",")
-            self._json({"status": 200, "prices": {t: 100.0 for t in tickers}})
+            # Mimic a cold currency pair failing to resolve, so the tool's
+            # reporting of unresolved symbols is exercised.
+            prices, unresolved = {}, {}
+            for t in tickers:
+                if t == "CURRENCY:JPYIDR":
+                    unresolved[t] = "#N/A"
+                else:
+                    prices[t] = 100.0
+            self._json({"status": 200, "prices": prices, "unresolved": unresolved})
         elif action == "summary":
             self._json({
                 "status": 200,
@@ -263,3 +271,18 @@ async def test_diagnostics_report_routing_without_leaking_the_secret(client):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_market_data_reports_why_a_symbol_failed(client):
+    """An unresolved symbol must say what the sheet held, not vanish silently."""
+    async with client:
+        text = await call_tool(client, "get_market_data", {})
+
+    assert "ETF prices (USD per share):" in text
+    assert "VOO" in text
+    assert "FX rates (IDR per 1 unit):" in text
+    assert "NOT RESOLVED: JPY" in text
+    assert "CURRENCY:JPYIDR -> #N/A" in text
+    # The pairs that did resolve are still reported.
+    assert "USD" in text
