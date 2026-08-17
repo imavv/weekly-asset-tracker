@@ -19,10 +19,12 @@ import pytest
 os.environ.setdefault("MCP_SECRET", "test-secret")
 os.environ.setdefault("GAS_SECRET_TOKEN", "test-gas-token")
 
-from tests.test_tracker import make_snapshot  # noqa: E402
+from tests.test_tracker import make_observations  # noqa: E402
 
 START_ROW = 1600
 POSTED: list[dict] = []
+# Symbols the fake sheet should fail to resolve, for the unhappy-path tests.
+UNRESOLVED: set[str] = set()
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -50,11 +52,9 @@ class FakeGas(BaseHTTPRequestHandler):
 
         if action == "prices":
             tickers = params["tickers"][0].split(",")
-            # Mimic a cold currency pair failing to resolve, so the tool's
-            # reporting of unresolved symbols is exercised.
             prices, unresolved = {}, {}
             for t in tickers:
-                if t == "CURRENCY:JPYIDR":
+                if t in UNRESOLVED:
                     unresolved[t] = "#N/A"
                 else:
                     prices[t] = 100.0
@@ -100,6 +100,7 @@ def client(gas_server, monkeypatch):
 
     monkeypatch.setattr(gas_module, "fetch_usdidr", fake_fx)
     POSTED.clear()
+    UNRESOLVED.clear()
 
     transport = httpx.ASGITransport(app=app_module.app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
@@ -143,8 +144,8 @@ async def call_tool(client: httpx.AsyncClient, name: str, arguments: dict) -> st
 async def test_preview_does_not_write(client):
     async with client:
         text = await call_tool(
-            client, "preview_snapshot",
-            {"snapshot": make_snapshot().model_dump()},
+            client, "prepare_snapshot",
+            {"observations": make_observations().model_dump()},
         )
 
     assert "PREVIEW" in text
@@ -158,7 +159,7 @@ async def test_submit_writes_a_correct_block(client):
     async with client:
         text = await call_tool(
             client, "submit_snapshot",
-            {"snapshot": make_snapshot().model_dump()},
+            {"observations": make_observations().model_dump()},
         )
 
     assert "WRITTEN" in text
@@ -183,11 +184,11 @@ async def test_submit_writes_a_correct_block(client):
 
 @pytest.mark.anyio
 async def test_validation_failure_blocks_the_write(client):
-    bad = make_snapshot().model_dump()
+    bad = make_observations().model_dump()
     bad["banks"] = bad["banks"][:-1]  # drop BNI (RDN)
 
     async with client:
-        text = await call_tool(client, "submit_snapshot", {"snapshot": bad})
+        text = await call_tool(client, "submit_snapshot", {"observations": bad})
 
     assert "REFUSED" in text
     assert "Missing bank account" in text
@@ -199,8 +200,8 @@ async def test_secret_is_never_exposed_to_the_model(client):
     """The GAS token must not appear in any tool output."""
     async with client:
         preview = await call_tool(
-            client, "preview_snapshot",
-            {"snapshot": make_snapshot().model_dump()},
+            client, "prepare_snapshot",
+            {"observations": make_observations().model_dump()},
         )
         prices = await call_tool(client, "get_market_data", {})
 
@@ -276,6 +277,7 @@ def anyio_backend():
 @pytest.mark.anyio
 async def test_market_data_reports_why_a_symbol_failed(client):
     """An unresolved symbol must say what the sheet held, not vanish silently."""
+    UNRESOLVED.add("CURRENCY:JPYIDR")
     async with client:
         text = await call_tool(client, "get_market_data", {})
 
@@ -286,3 +288,81 @@ async def test_market_data_reports_why_a_symbol_failed(client):
     assert "CURRENCY:JPYIDR -> #N/A" in text
     # The pairs that did resolve are still reported.
     assert "USD" in text
+
+
+@pytest.mark.anyio
+async def test_prices_are_fetched_not_supplied_by_the_model(client):
+    """Observations carry no prices, yet the written rows have them.
+
+    This is what the consolidation bought: the model cannot mistype a price
+    between the preview and the write, because it never handles one.
+    """
+    payload = make_observations().model_dump()
+    assert "etfs" not in payload
+    assert "fx" not in payload
+
+    async with client:
+        await call_tool(client, "submit_snapshot", {"observations": payload})
+
+    rows = POSTED[0]["rows"]
+    voo = next(r for r in rows if r[2] == "VOO")
+    usd = next(r for r in rows if r[2] == "USD")
+
+    assert voo[6] == 100.0   # the fake sheet's price, resolved server-side
+    assert usd[6] == 100.0   # likewise the rate
+
+
+@pytest.mark.anyio
+async def test_date_defaults_to_wib_without_the_model_supplying_it(client):
+    from tracker.config import today_wib
+
+    async with client:
+        await call_tool(
+            client, "submit_snapshot",
+            {"observations": make_observations().model_dump()},
+        )
+
+    assert all(r[0] == today_wib() for r in POSTED[0]["rows"])
+
+
+@pytest.mark.anyio
+async def test_explicit_date_overrides_the_default(client):
+    async with client:
+        await call_tool(
+            client, "submit_snapshot",
+            {"observations": make_observations(date="2026-08-10").model_dump()},
+        )
+
+    assert all(r[0] == "2026-08-10" for r in POSTED[0]["rows"])
+
+
+@pytest.mark.anyio
+async def test_unresolved_market_data_blocks_the_write(client):
+    """A price we could not fetch must stop the write, not silently zero it."""
+    UNRESOLVED.add("CURRENCY:JPYIDR")
+
+    async with client:
+        text = await call_tool(
+            client, "submit_snapshot",
+            {"observations": make_observations().model_dump()},
+        )
+
+    assert "REFUSED" in text
+    assert "Market data unresolved for: JPY" in text
+    assert "CURRENCY:JPYIDR -> #N/A" in text
+    assert POSTED == []
+
+
+@pytest.mark.anyio
+async def test_an_override_unblocks_an_unresolvable_symbol(client):
+    """The escape hatch: a hand-supplied rate lets the week still be written."""
+    UNRESOLVED.add("CURRENCY:JPYIDR")
+    obs = make_observations().model_dump()
+    obs["fx_rate_overrides"] = [{"currency": "JPY", "rate_idr": 112.7763}]
+
+    async with client:
+        text = await call_tool(client, "submit_snapshot", {"observations": obs})
+
+    assert "WRITTEN" in text
+    jpy = next(r for r in POSTED[0]["rows"] if r[2] == "JPY")
+    assert jpy[6] == 112.7763

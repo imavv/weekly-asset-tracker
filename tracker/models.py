@@ -90,8 +90,64 @@ class FxHolding(BaseModel):
     )
 
 
+class Observations(BaseModel):
+    """What the model reads off the screenshots — and nothing else.
+
+    This is the tool-facing input. Prices, exchange rates, the date, quantities,
+    row numbers and formulas are all resolved server-side, so none of them
+    appear here. If a value cannot be observed from a screenshot, it does not
+    belong in this model.
+    """
+
+    banks: list[BankBalance] = Field(
+        description=f"All {len(BANK_ACCOUNTS)} cash/deposit/bond balances."
+    )
+    ajaib_usd: float = Field(
+        ge=0,
+        description=(
+            "Ajaib buying power in USD, from the screenshot. The server converts "
+            "it to IDR using this block's locked FX rate."
+        ),
+    )
+    stocks: list[StockHolding] = Field(
+        description=f"All {len(STOCK_TICKERS)} IDX stock positions."
+    )
+    date: str | None = Field(
+        default=None,
+        description=(
+            "EOD date as YYYY-MM-DD. Leave unset unless the user names a "
+            "specific date — the server defaults to today in WIB."
+        ),
+    )
+    etf_price_overrides: list[EtfHolding] = Field(
+        default_factory=list,
+        description=(
+            "ESCAPE HATCH — leave empty. Only use it when the server reports an "
+            "ETF price it could not resolve and the user supplies one by hand."
+        ),
+    )
+    fx_rate_overrides: list[FxHolding] = Field(
+        default_factory=list,
+        description=(
+            "ESCAPE HATCH — leave empty. Only use it when the server reports an "
+            "FX rate it could not resolve and the user supplies one by hand."
+        ),
+    )
+
+    @field_validator("date")
+    @classmethod
+    def _check_optional_date(cls, v: str | None) -> str | None:
+        if v is not None and not DATE_RE.match(v):
+            raise ValueError(f"date must be YYYY-MM-DD, got {v!r}")
+        return v
+
+
 class Snapshot(BaseModel):
-    """One complete weekly EOD portfolio snapshot."""
+    """One complete weekly EOD portfolio snapshot.
+
+    Internal only — built by the server from Observations plus resolved market
+    data. It is not a tool argument, so the model never constructs one.
+    """
 
     date: str = Field(
         description="EOD date for this snapshot, YYYY-MM-DD (WIB)."

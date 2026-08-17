@@ -23,9 +23,10 @@ server. Repo: `github.com/imavv/weekly-asset-tracker`.
  ┌──────────────────────────────────────────────────────┐
  │  MCP server  (Vercel, Python)                        │
  │                                                      │
- │  get_market_data  preview_snapshot                   │
- │  get_today_wib    submit_snapshot  ← only writer     │
- │                   get_summary                        │
+ │  prepare_snapshot   build + validate, writes nothing │
+ │  submit_snapshot    ← the only writer                │
+ │  get_summary        read back after a write          │
+ │  get_market_data    diagnostic only                  │
  │                                                      │
  │  assemble.py  roster order, lots x100, holdings,     │
  │               formulas, FX lock                      │
@@ -43,11 +44,21 @@ server. Repo: `github.com/imavv/weekly-asset-tracker`.
 
 ### Why it is shaped this way
 
-**Semantic tool arguments.** Claude sends `{"ticker": "VOO", "price_usd": 512.34}`,
+**Semantic tool arguments.** Claude sends `{"account": "Mandiri", "value_idr": 34897289}`,
 not an 11-column spreadsheet row. The server turns observations into the A–K
 grid. This makes "wrong row order" and "shifted columns" structurally impossible
 rather than something a validator has to catch afterwards, and lets JSON Schema
 reject malformed calls before any of our code runs.
+
+**A workflow, not an agent.** The weekly task needs exactly two decisions: the
+model reads the screenshots, the human approves the write. Everything else — the
+date, market data, assembly, validation — is a fixed sequence, so it lives
+inside `_build_block` rather than being split across tools the model must
+remember to call in order. A step that never varies is not a decision, and
+exposing it as one only creates a way to get it wrong. The `Observations` model
+is where that line is drawn: it has no field for a price, rate or date, so the
+model cannot supply one even by accident — and cannot mistype one between the
+preview and the write, because it never handles one.
 
 **Judgement to the model, arithmetic to the code.** Reading a blurry Superbank
 screenshot needs judgement. Multiplying lots by 100 does not — and a model doing
@@ -70,7 +81,7 @@ US ETFs (11), and FX currencies (5). ETF value formulas convert USD via the
 |---|---|
 | `api/index.py` | Vercel entrypoint — exports the ASGI app |
 | `tracker/app.py` | Secret-path gate, transport wiring, per-request lifespan |
-| `tracker/server.py` | The five MCP tool definitions |
+| `tracker/server.py` | MCP tool definitions + `_build_block`, the fixed workflow |
 | `tracker/models.py` | Semantic input schema (Pydantic → JSON Schema) |
 | `tracker/assemble.py` | Snapshot → 11-column A–K rows |
 | `tracker/checks.py` | Completeness and price-sanity validation |
@@ -79,7 +90,7 @@ US ETFs (11), and FX currencies (5). ETF value formulas convert USD via the
 | `holdings.json` | Static ETF share counts + FX amounts. **Edit + push to change** |
 | `portfolio_gas.js` | Apps Script source (deployed separately in Google) |
 | `SKILL.md` | Instructions for Claude |
-| `tests/` | 32 tests: assembly, validation, end-to-end over MCP |
+| `tests/` | 41 tests: assembly, validation, end-to-end over MCP |
 | `bot.py`, `render.py`, `portfolio_tracker.py` | **Retired** Telegram pipeline |
 
 ---
@@ -198,7 +209,7 @@ prompt by default. Do not tick "always allow" for it.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest anyio
-.venv/bin/python -m pytest tests/ -q          # 32 tests, no network needed
+.venv/bin/python -m pytest tests/ -q          # 41 tests, no network needed
 
 # Inspect the server interactively
 MCP_SECRET=dev GAS_ENDPOINT=... GAS_SECRET_TOKEN=... \
