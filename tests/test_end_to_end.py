@@ -60,9 +60,19 @@ class FakeGas(BaseHTTPRequestHandler):
                     prices[t] = 100.0
             self._json({"status": 200, "prices": prices, "unresolved": unresolved})
         elif action == "summary":
+            # Mirrors the real sheet's L4:O11 block, TOTAL row included.
             self._json({
                 "status": 200,
-                "trend": {"values": [["Week", "Total"], ["W-0", "1,000"]]},
+                "trend": {"values": [
+                    ["Category", "W-0", "W-1", "W-2"],
+                    ["Cash", "112.7mn", "114.4mn", "116.2mn"],
+                    ["Deposit", "107.8mn", "107.8mn", "107.8mn"],
+                    ["MF Bonds", "2.0mn", "2.0mn", "2.0mn"],
+                    ["Stock", "119.6mn", "120.8mn", "114.2mn"],
+                    ["ETF", "202.7mn", "203.9mn", "194.2mn"],
+                    ["FX", "178.7mn", "178.4mn", "180.7mn"],
+                    ["TOTAL", "723.4mn", "727.2mn", "715.0mn"],
+                ]},
                 "breakdown": {"values": [["Asset", "Value"], ["Cash", "500"]]},
             })
         else:
@@ -216,8 +226,12 @@ async def test_summary_renders_markdown(client):
         text = await call_tool(client, "get_summary", {})
 
     assert "## Week-to-Week Trend" in text
-    assert "| Week | Total |" in text
-    assert "| Cash | 500 |" in text
+    assert "| Category | W-0 | W-1 | W-2 |" in text
+    assert "| Cash | 112.7mn | 114.4mn | 116.2mn |" in text
+    # FX is a category now, and TOTAL is the row a hardcoded range used to cut off.
+    assert "| FX | 178.7mn | 178.4mn | 180.7mn |" in text
+    assert "| TOTAL | 723.4mn | 727.2mn | 715.0mn |" in text
+    assert "## Asset Breakdown" in text
 
 
 @pytest.mark.anyio

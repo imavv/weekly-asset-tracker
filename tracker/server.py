@@ -224,7 +224,9 @@ async def submit_snapshot(observations: Observations, force: bool = False) -> st
 async def get_summary() -> str:
     """Read back the two dashboard tables: week-to-week trend and asset breakdown.
 
-    Use this after submit_snapshot to show the user the updated position.
+    Call this immediately after a successful submit_snapshot and show both
+    tables to the user — it is how they see the week land. The trend table
+    covers every asset category plus the TOTAL row.
     """
     summary = await gas.fetch_summary()
     return "\n\n".join([

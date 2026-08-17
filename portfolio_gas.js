@@ -45,8 +45,8 @@ function doGet(e) {
       const out = ContentService.createTextOutput(
         JSON.stringify({
           status:    200,
-          trend:     rangeData(sheet, "L4:O10"),   // Week-to-Week Trend
-          breakdown: rangeData(sheet, "H13:J21"),  // Asset Breakdown
+          trend:     rangeData(trendRange(sheet)),      // Week-to-Week Trend
+          breakdown: rangeData(breakdownRange(sheet)),  // Asset Breakdown
         })
       );
       out.setMimeType(ContentService.MimeType.JSON);
@@ -258,11 +258,46 @@ function dateAlreadyPresent(sheet, dateStr) {
 
 
 /**
+ * The Week-to-Week Trend block: header at L4, running down to its TOTAL row.
+ *
+ * Scanned rather than hardcoded. This range was "L4:O10" until the FX category
+ * was added, which pushed TOTAL from row 10 to row 11 — and a fixed range does
+ * not fail loudly when that happens, it just silently returns a table with the
+ * total missing. Scanning means the next asset class costs nothing here.
+ */
+function trendRange(sheet) {
+  return blockFrom(sheet, 4, 12, 4);   // header row 4, column L, 4 wide (L..O)
+}
+
+/** The Asset Breakdown block: header at H13, same scanning rule. */
+function breakdownRange(sheet) {
+  return blockFrom(sheet, 13, 8, 3);   // header row 13, column H, 3 wide (H..J)
+}
+
+/**
+ * Helper: a block starting at (headerRow, firstCol), extending down until the
+ * first blank cell in that column, and `numCols` wide.
+ */
+function blockFrom(sheet, headerRow, firstCol, numCols) {
+  const available = sheet.getMaxRows() - headerRow + 1;
+  const column = sheet
+    .getRange(headerRow, firstCol, available, 1)
+    .getValues();
+
+  let lastRow = headerRow;
+  for (let i = 0; i < column.length; i++) {
+    if (String(column[i][0]).trim() === "") break;
+    lastRow = headerRow + i;
+  }
+  return sheet.getRange(headerRow, firstCol, lastRow - headerRow + 1, numCols);
+}
+
+
+/**
  * Helper: read a range and return its display values + per-cell formatting,
  * so the downstream renderer can reproduce the sheet's exact look.
  */
-function rangeData(sheet, a1) {
-  const r = sheet.getRange(a1);
+function rangeData(r) {
   return {
     values:      r.getDisplayValues(),  // text exactly as shown (currency, %, mn)
     backgrounds: r.getBackgrounds(),    // "#rrggbb" fill per cell
