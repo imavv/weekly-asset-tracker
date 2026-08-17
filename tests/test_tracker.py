@@ -16,7 +16,9 @@ from tracker.checks import check_snapshot
 from tracker.config import (
     BANK_ACCOUNTS, ETF_TICKERS, FX_CURRENCIES, NUM_COLS, ROSTER, STOCK_TICKERS,
 )
-from tracker.models import BankBalance, EtfHolding, FxHolding, Snapshot, StockHolding
+from tracker.models import (
+    BankBalance, EtfHolding, FxHolding, Observations, Snapshot, StockHolding,
+)
 
 START_ROW = 1600
 FX = 16250.0
@@ -38,6 +40,21 @@ def make_snapshot(**overrides) -> Snapshot:
     }
     data.update(overrides)
     return Snapshot(**data)
+
+
+def make_observations(**overrides) -> Observations:
+    """Only what a screenshot shows — no prices, rates or date."""
+    data = {
+        "banks": [BankBalance(account=a, value_idr=1_000_000) for a in BANK_ACCOUNTS],
+        "ajaib_usd": 412.5,
+        "stocks": [
+            StockHolding(ticker="BBCA", lots=44, price_idr=8300, avg_idr=7900),
+            StockHolding(ticker="ICBP", lots=10, price_idr=11000, avg_idr=10500),
+            StockHolding(ticker="BBRI", lots=25, price_idr=4200, avg_idr=4000),
+        ],
+    }
+    data.update(overrides)
+    return Observations(**data)
 
 
 # ── Assembly ─────────────────────────────────────────────────────────────────
@@ -256,3 +273,29 @@ def test_unknown_ticker_is_rejected_by_the_schema():
 def test_malformed_date_is_rejected():
     with pytest.raises(Exception):
         make_snapshot(date="14/08/2026")
+
+
+# ── Observations: the tool-facing input ──────────────────────────────────────
+
+def test_observations_carry_no_market_data():
+    """Prices, rates and the date are the server's job, not the model's."""
+    fields = set(Observations.model_fields)
+
+    assert {"banks", "ajaib_usd", "stocks"} <= fields
+    # Nothing here can carry a price or rate as a required field.
+    assert "etfs" not in fields
+    assert "fx" not in fields
+    for optional in ("date", "etf_price_overrides", "fx_rate_overrides"):
+        assert Observations.model_fields[optional].is_required() is False
+
+
+def test_observations_default_to_no_overrides_and_no_date():
+    obs = make_observations()
+    assert obs.date is None
+    assert obs.etf_price_overrides == []
+    assert obs.fx_rate_overrides == []
+
+
+def test_observations_reject_a_malformed_date():
+    with pytest.raises(Exception):
+        make_observations(date="14/08/2026")

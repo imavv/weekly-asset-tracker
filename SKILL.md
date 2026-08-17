@@ -20,65 +20,58 @@ Sheet, through the `weekly-asset-tracker` MCP server.
 
 **You do:** read numbers off screenshots and report them.
 
-**You do not:** compute anything. The server owns every derived value — share
-counts, lot conversion, spreadsheet formulas, row numbers, USD→IDR conversion,
-and the order of rows. Report raw observations and let it do the rest.
+**You do not:** compute or look up anything. The server owns every derived
+value — the date, market prices, exchange rates, share counts, lot conversion,
+spreadsheet formulas, row numbers and row order.
 
-Specifically, never try to supply: ETF share counts, spreadsheet formulas, row
-numbers, the FX rate, or a `$K$` anchor. There is no place to put them.
+The tool schema has no field for any of those, so if you find yourself wanting
+to supply one, that is the signal you have misread the task.
 
 ---
 
 ## Workflow
 
-### Step 1 — Establish the date
-Call `get_today_wib` unless the user names a different EOD date. Do not infer
-the date from your own sense of "today" — the server runs in UTC and the user is
-in WIB.
-
-### Step 2 — Read the screenshots
+### Step 1 — Read the screenshots
 Extract one number per account, per the roster below. All balances are IDR
 integers unless stated otherwise.
 
 If a screenshot is missing or unreadable, use `0` and **tell the user which
-accounts you zero-filled** before previewing. Never silently drop an account —
-every roster entry must be supplied.
+accounts you zero-filled**. Never silently drop an account — every roster entry
+must be supplied.
 
-### Step 3 — Get market data
-Call `get_market_data`. It resolves ETF prices **and** foreign-currency rates
-inside the sheet itself and returns plain numbers. Use them verbatim.
+You do not need the date, ETF prices, or FX rates. The server resolves all
+three itself.
 
-Do **not** web-search prices or rates. Do not carry values forward from a
-previous week. If the tool reports something it could not resolve, ask the user
-rather than guessing.
+### Step 2 — Prepare
+Call `prepare_snapshot` with what you read, and **show the user the result**.
+It reports the exact rows that would be written, the locked USD/IDR rate, and
+any errors or warnings. Nothing is written.
 
-Two things it does not cover:
-- **IDX stock prices** — read those off the broker screenshot, which is the
-  source of truth for BBCA, ICBP and BBRI.
-- **How much foreign currency is held** — that lives in `holdings.json` on the
-  server. You supply only the rate.
-
-### Step 4 — Preview
-Call `preview_snapshot` and **show the user the result**. It reports the exact
-sheet rows that would be written, the locked USD/IDR rate, and any errors or
-warnings. Nothing is written.
-
-Errors block the write — fix them and preview again. Warnings are advisory:
+Errors block the write — fix them and prepare again. Warnings are advisory:
 surface them and let the user decide.
 
-### Step 5 — Confirm, then submit
-Ask the user to confirm. Only after they say yes, call `submit_snapshot`.
+If it reports market data it could not resolve, tell the user which symbols
+failed and what the sheet returned. Only if they supply a figure by hand should
+you use `etf_price_overrides` / `fx_rate_overrides`.
 
-If it reports that a block for this date already exists, **stop and ask** — that
-usually means the week was already recorded. Only pass `force=true` if the user
-explicitly asks for a duplicate.
+### Step 3 — Confirm, then submit
+Ask the user to confirm. Only after they say yes, call `submit_snapshot` with
+**the same observations** you passed to `prepare_snapshot`. Prices are
+re-fetched server-side, so you never retype them.
 
-### Step 6 — Show the result
+If it reports that a block for this date already exists, **stop and ask** —
+that usually means the week was already recorded. Only pass `force=true` if the
+user explicitly asks for a duplicate.
+
+### Step 4 — Show the result
 Call `get_summary` and show the updated trend and breakdown tables.
 
 ---
 
 ## What to report
+
+Everything in this table comes off a screenshot. Nothing else belongs in the
+tool call.
 
 | Field | Source | Notes |
 |---|---|---|
@@ -87,8 +80,10 @@ Call `get_summary` and show the updated trend and breakdown tables.
 | Stock `lots` | broker screenshot | **RAW lot count** as displayed. Do NOT multiply by 100 |
 | Stock `price_idr` | broker screenshot | Last price, IDR |
 | Stock `avg_idr` | prior week / user | Cost basis; carry forward unless the user says it changed |
-| ETF `price_usd` | `get_market_data` | USD per share, verbatim from the tool |
-| FX `rate_idr` | `get_market_data` | **IDR per ONE unit** of the currency (~17800 for USD, ~113 for JPY) |
+
+**Resolved by the server, never by you:** the snapshot date, all 11 ETF prices,
+all 5 FX rates, ETF share counts, currency amounts, every spreadsheet formula,
+and every row number.
 
 ---
 
@@ -109,8 +104,8 @@ Every one of these must appear in the snapshot.
 | BNI (RDN) | Cash Settlement End Balance |
 | Ajaib | Buying Power, in USD |
 | BBCA / ICBP / BBRI | Broker screenshot: lots + last price |
-| VOO, VT, VTI, SPYM, GDX, VEA, SMH, GLD, IGV, XLP, XLE | `get_market_data` |
-| CNY, USD, SGD, AUD, JPY | `get_market_data` — rate only |
+| VOO, VT, VTI, SPYM, GDX, VEA, SMH, GLD, IGV, XLP, XLE | server-resolved — you supply nothing |
+| CNY, USD, SGD, AUD, JPY | server-resolved — you supply nothing |
 
 **Bibit (RDN)** is negligible — skip it. It is not the same as **Bibit**, and it
 is not **Stockbit (RDN)**, which *is* tracked.
