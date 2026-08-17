@@ -69,6 +69,12 @@ evaluate `GOOGLEFINANCE` in a hidden scratch tab and hand back plain numbers,
 for both ETF prices and `CURRENCY:XXXIDR` pairs. Writing the live formula into
 column G would rewrite every past week's snapshot on each recalculation.
 
+**Summary ranges are scanned, not hardcoded.** `trendRange` / `breakdownRange`
+in the Apps Script start at their header cell and read down to the first blank
+row. They used to be fixed (`L4:O10`), which silently dropped the TOTAL row the
+moment FX was added and pushed it down — a fixed range does not fail loudly
+when the table grows, it just returns less.
+
 **The roster is 29 rows.** Cash/Deposit/MF Bonds (9), IDX stocks (3), Ajaib,
 US ETFs (11), and FX currencies (5). ETF value formulas convert USD via the
 `$K$` anchor; FX rows do not, because column G already holds IDR per unit.
