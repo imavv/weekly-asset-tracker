@@ -12,10 +12,15 @@ endpoint.
 screenshots → Claude reads them → MCP server assembles + validates → Apps Script → Sheet
 ```
 
-Claude reports only what it can see (`{"ticker": "VOO", "price_usd": 512.34}`).
-Every derived value — share counts, lot conversion, spreadsheet formulas, row
-numbers, FX conversion — is computed server-side, so the model never touches the
+Claude reports only what it can see (`{"ticker": "VOO", "price_usd": 512.34}`,
+`{"currency": "USD", "amount": 4800}`). Every derived value — ETF share counts,
+exchange rates, lot conversion, spreadsheet formulas, row numbers, FX
+conversion — is computed server-side, so the model never touches the
 arithmetic.
+
+Foreign-currency balances are the one quantity read off a screenshot rather
+than stored: the multi-currency screen decides which currencies get a row and
+how much each holds, and `holdings.json` is only the fallback.
 
 See [`CONTEXT.md`](CONTEXT.md) for architecture, deployment and the security
 model.
