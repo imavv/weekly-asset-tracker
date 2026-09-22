@@ -86,7 +86,7 @@ function doGet(e) {
  * {
  *   "token": "your-secret",
  *   "start_row": 1585,          // first row to write (integer)
- *   "rows": [                   // array of 23 rows, each an 11-element array
+ *   "rows": [                   // the block's rows, each an 11-element array
  *     ["2026-06-16", "Cash", "Mandiri", 12500000, "", "", "", "", "", "", "=GOOGLEFINANCE(\"CURRENCY:USDIDR\")"],
  *     ["2026-06-16", "Cash", "BCA",     8200000,  "", "", "", "", "", "", ""],
  *     ...
@@ -130,7 +130,7 @@ function doPost(e) {
 
     // ── 4a. Duplicate-date guard ───────────────────────────────
     // Chat is freeform — "hmm, try again?" is an easy way to append a second
-    // 23-row block for the same week and silently inflate the summary. Refuse
+    // block for the same week and silently inflate the summary. Refuse
     // unless the caller explicitly passes force:true.
     const blockDate = String(rows[0][0]).trim();
     if (payload.force !== true && dateAlreadyPresent(sheet, blockDate)) {
@@ -234,8 +234,8 @@ function resolvePrices(tickersParam) {
 /**
  * Helper: does column A already contain this date?
  *
- * Each weekly block writes the same date into all 23 rows, so the date
- * appearing anywhere means that week is already recorded. Column A may hold
+ * Each weekly block writes the same date into every one of its rows, so the
+ * date appearing anywhere means that week is already recorded. Column A may hold
  * real Date objects or strings depending on how the cell was formatted, so
  * normalise both to yyyy-MM-dd before comparing.
  */

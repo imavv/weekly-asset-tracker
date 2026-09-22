@@ -7,8 +7,9 @@ Two kinds of thing live here:
    raises at import time so a misconfigured deploy fails loudly instead of
    silently writing nowhere.
 
-2. **The roster** — the fixed order of the 23 rows in every weekly block. This
-   is the single source of truth for row ordering; the model never chooses it.
+2. **The roster** — the order of rows in every weekly block. Everything up to
+   the ETFs is fixed; the FX tail comes from the week's screenshot. This is
+   the single source of truth for row ordering; the model never chooses it.
 """
 
 from __future__ import annotations
@@ -75,10 +76,23 @@ ETF_TICKERS: tuple[str, ...] = (
     "SMH", "GLD", "IGV", "XLP", "XLE",
 )
 
-# Foreign currency balances. Rate resolved via GOOGLEFINANCE, amount held from
-# holdings.json. Column G is IDR per unit, so value is simply F*G — no $K$
-# anchor, unlike ETFs whose prices are quoted in USD.
+# Foreign currencies. UNLIKE every other roster entry, this list is NOT the
+# roster — it is a display order plus the fallback set.
+#
+# The FX roster is whatever the week's screenshot shows: a currency the model
+# reports is written even if it is absent here, and one it does not report is
+# dropped even if it is here. This list only decides (a) the order known
+# currencies appear in, and (b) what to fall back to when no FX was observed at
+# all. ETFs are the opposite and deliberately so — an ETF screenshot shows a
+# price but never a share count, so ETF_TICKERS above really is the roster.
+#
+# Rate is resolved via GOOGLEFINANCE. Column G is IDR per unit, so value is
+# simply F*G — no $K$ anchor, unlike ETFs whose prices are quoted in USD.
 FX_CURRENCIES: tuple[str, ...] = ("CNY", "USD", "SGD", "AUD", "JPY")
+
+# The base currency. An "IDR" FX row would double-count a cash balance and its
+# rate would be 1, so it is rejected at the schema boundary.
+BASE_CURRENCY = "IDR"
 
 # Category per account. Ajaib is Cash even though its value is a USD formula.
 CATEGORY: dict[str, str] = {
@@ -97,10 +111,10 @@ CATEGORY: dict[str, str] = {
     **{c: "FX" for c in FX_CURRENCIES},
 }
 
-# THE ROSTER — the exact order of rows in every weekly block.
+# The fixed head of the roster — everything whose membership never varies.
 # Because the server builds rows from this list, "wrong row order" and
 # "shifted columns" stop being possible failure modes.
-ROSTER: tuple[str, ...] = (
+FIXED_ROSTER: tuple[str, ...] = (
     "Mandiri",
     "BCA",
     "Seabank",
@@ -113,22 +127,77 @@ ROSTER: tuple[str, ...] = (
     *STOCK_TICKERS,
     "Ajaib",
     *ETF_TICKERS,
-    *FX_CURRENCIES,
 )
 
 
-def googlefinance_symbol(name: str) -> str:
+def order_fx(currencies) -> tuple[str, ...]:
+    """Put a week's currencies in a stable order: known ones first, then new.
+
+    Known currencies keep their FX_CURRENCIES position so a row does not move
+    between weeks. Anything new is appended alphabetically rather than in the
+    order the model happened to read it off the screen — the sheet's row order
+    should not depend on which way the model's eye travelled.
+    """
+    seen = dict.fromkeys(currencies)  # de-duplicate, preserve first appearance
+    known = [c for c in FX_CURRENCIES if c in seen]
+    new = sorted(c for c in seen if c not in FX_CURRENCIES)
+    return (*known, *new)
+
+
+def build_roster(fx_currencies) -> tuple[str, ...]:
+    """The exact order of rows in one weekly block.
+
+    The block is FIXED_ROSTER plus this week's currencies, so its length varies
+    with how many currencies the screenshot showed. Nothing downstream assumes
+    a row count: the Apps Script writes `rows.length` rows, and the dashboard
+    ranges scan to the first blank row rather than using a fixed height.
+    """
+    return (*FIXED_ROSTER, *order_fx(fx_currencies))
+
+
+# The roster as it stands with no observations — the fallback shape.
+ROSTER: tuple[str, ...] = build_roster(FX_CURRENCIES)
+
+
+def category_for(name: str, fx_currencies=()) -> str:
+    """Column B for a roster entry.
+
+    CATEGORY covers everything fixed. A currency this week's screenshot
+    introduced is not in it, so `fx_currencies` names the week's FX roster and
+    anything in it falls into the FX category.
+    """
+    if name in CATEGORY:
+        return CATEGORY[name]
+    if name in fx_currencies:
+        return "FX"
+    raise KeyError(f"No category for roster entry {name!r}")
+
+
+def fx_symbol(currency: str) -> str:
+    """The GOOGLEFINANCE symbol for a currency: IDR per one unit."""
+    return f"CURRENCY:{currency}IDR"
+
+
+def googlefinance_symbol(name: str, fx_currencies=FX_CURRENCIES) -> str:
     """The symbol to hand GOOGLEFINANCE for a roster entry.
 
-    ETFs use the bare ticker; currencies need the CURRENCY:XXXIDR form.
+    ETFs use the bare ticker; currencies need the CURRENCY:XXXIDR form. Pass
+    `fx_currencies` when the week's FX roster differs from the default.
     """
-    if name in FX_CURRENCIES:
-        return f"CURRENCY:{name}IDR"
+    if name in fx_currencies:
+        return fx_symbol(name)
     return name
 
 SHARES_PER_LOT = 100  # IDX convention: 1 lot = 100 shares
 FX_FORMULA = '=GOOGLEFINANCE("CURRENCY:USDIDR")'
 PRICE_DEVIATION_THRESHOLD = 0.30  # advisory flag when price vs avg differs >30%
+
+# How far the multi-currency screen's own IDR total may sit from the sum of the
+# currencies reported before it is worth mentioning. It is never zero: the bank
+# converts at its own rates and we convert at GOOGLEFINANCE's, which alone runs
+# to about a percent. Wide enough not to cry wolf every week, narrow enough that
+# a missing currency of any real size trips it.
+FX_TOTAL_TOLERANCE = 0.03
 
 
 def today_wib() -> str:

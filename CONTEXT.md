@@ -29,7 +29,7 @@ server. Repo: `github.com/imavv/weekly-asset-tracker`.
  │  get_market_data    diagnostic only                  │
  │                                                      │
  │  assemble.py  roster order, lots x100, holdings,     │
- │               formulas, FX lock                      │
+ │               FX from screenshot, formulas, FX lock  │
  │  checks.py    completeness + price sanity            │
  └────────┬─────────────────────────────────────────────┘
           │  HTTPS + GAS_SECRET_TOKEN
@@ -75,9 +75,43 @@ row. They used to be fixed (`L4:O10`), which silently dropped the TOTAL row the
 moment FX was added and pushed it down — a fixed range does not fail loudly
 when the table grows, it just returns less.
 
-**The roster is 29 rows.** Cash/Deposit/MF Bonds (9), IDX stocks (3), Ajaib,
-US ETFs (11), and FX currencies (5). ETF value formulas convert USD via the
-`$K$` anchor; FX rows do not, because column G already holds IDR per unit.
+**The roster is 23 fixed rows plus one per currency.** Cash/Deposit/MF Bonds
+(9), IDX stocks (3), Ajaib, US ETFs (11) — then the FX tail, which is whatever
+this week's multi-currency screenshot showed. ETF value formulas convert USD
+via the `$K$` anchor; FX rows do not, because column G already holds IDR per
+unit.
+
+**ETF quantities come from the file; FX amounts come from the screenshot.**
+The split looks inconsistent until you notice what each screenshot actually
+contains. An Ajaib or brokerage screen shows an ETF's *price* and nothing about
+how many shares are held, so a share count in a tool argument could only ever
+be a guess — it belongs in `holdings.json`, and the schema has no field for it.
+A multi-currency screen shows the balance itself, so the opposite holds: the
+file's copy is a stale transcription of something the screenshot states
+directly, and preferring the file would mean writing a number we know is older
+than the one in front of us.
+
+That makes FX the one roster the model can change. A currency it reports is
+written even if the server has never heard of it; a currency it omits is
+dropped rather than carried forward. Dropping is the deliberate choice: the
+balances come from a single screen listing every currency, so absence from that
+screen is evidence of closure, not of a missing screenshot. The failure mode it
+accepts — a screen that cut off mid-list silently deleting a row — is handled
+by making it loud instead of impossible: `fx_provenance` marks every changed,
+new and dropped currency in the preview, and the human confirm step is where it
+gets caught. An empty `fx` list is the one case that falls back to
+`holdings.json` wholesale, so a forgotten screenshot cannot wipe five rows.
+
+**The Forex Pocket's own total is a checksum.** The BCA screen the balances
+come from scrolls, lists zero-balance currencies it merely offers, and does not
+order by size — so a real holding can sit below the fold, and dropping absent
+currencies turns that into a deleted row. The screen also states its own
+"Total Forex Pocket Value" in IDR, so `fx_total_idr` is reported alongside the
+balances and the server compares it to the sum of what was listed. The gap is
+never zero (the bank converts at its rates, we convert at GOOGLEFINANCE's —
+about 1% on real data), so the check is advisory above a 3% tolerance. It is
+coarse, and deliberately so: it will not notice fifty missing pounds, but it
+will notice a missing pocket worth millions, which is the failure that matters.
 
 ---
 
@@ -92,11 +126,11 @@ US ETFs (11), and FX currencies (5). ETF value formulas convert USD via the
 | `tracker/assemble.py` | Snapshot → 11-column A–K rows |
 | `tracker/checks.py` | Completeness and price-sanity validation |
 | `tracker/gas.py` | Apps Script client (async httpx) |
-| `tracker/config.py` | Env vars + the fixed 29-entry roster |
-| `holdings.json` | Static ETF share counts + FX amounts. **Edit + push to change** |
+| `tracker/config.py` | Env vars + the roster: 23 fixed entries plus the week's currencies |
+| `holdings.json` | ETF share counts (authoritative) + FX fallback amounts and cost basis. **Edit + push to change** |
 | `portfolio_gas.js` | Apps Script source (deployed separately in Google) |
 | `SKILL.md` | Instructions for Claude |
-| `tests/` | 41 tests: assembly, validation, end-to-end over MCP |
+| `tests/` | 58 tests: assembly, validation, end-to-end over MCP |
 | `bot.py`, `render.py`, `portfolio_tracker.py` | **Retired** Telegram pipeline |
 
 ---
@@ -189,8 +223,13 @@ prompt by default. Do not tick "always allow" for it.
   ever switch to stateful sessions, this must be rethought.
 - **Cold starts.** Apps Script can take >20s after idle. `maxDuration` is 60s in
   `vercel.json`; lower it if your plan rejects that.
-- **`holdings.json` is bundled into the deployment.** A buy or sell means edit +
-  push + redeploy. Claude cannot change it from chat.
+- **`holdings.json` is bundled into the deployment.** An ETF buy or sell means
+  edit + push + redeploy; Claude cannot change it from chat. FX amounts no
+  longer need a redeploy to be written correctly — the screenshot overrides
+  them — but the file still holds the FX cost basis and the no-screenshot
+  fallback, so it is worth keeping current. Nothing writes back to it: a week
+  where the screenshot disagrees leaves the file stale until edited by hand,
+  which is why the preview reports the difference every time.
 - **Duplicate writes** are blocked by a date guard in `doPost` — a second block
   for a date already in column A returns 409 unless `force:true`.
 
@@ -215,7 +254,7 @@ prompt by default. Do not tick "always allow" for it.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest anyio
-.venv/bin/python -m pytest tests/ -q          # 41 tests, no network needed
+.venv/bin/python -m pytest tests/ -q          # 58 tests, no network needed
 
 # Inspect the server interactively
 MCP_SECRET=dev GAS_ENDPOINT=... GAS_SECRET_TOKEN=... \

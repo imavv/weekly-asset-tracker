@@ -14,14 +14,32 @@ import pytest
 from tracker.assemble import assemble_rows
 from tracker.checks import check_snapshot
 from tracker.config import (
-    BANK_ACCOUNTS, ETF_TICKERS, FX_CURRENCIES, NUM_COLS, ROSTER, STOCK_TICKERS,
+    BANK_ACCOUNTS, ETF_TICKERS, FIXED_ROSTER, FX_CURRENCIES, NUM_COLS, ROSTER,
+    STOCK_TICKERS, build_roster, order_fx,
 )
+from tracker.holdings import load_fx_holdings
 from tracker.models import (
-    BankBalance, EtfHolding, FxHolding, Observations, Snapshot, StockHolding,
+    BankBalance, EtfHolding, FxBalance, FxHolding, FxPosition, Observations,
+    Snapshot, StockHolding,
 )
 
 START_ROW = 1600
 FX = 16250.0
+
+# The amounts holdings.json currently carries — the fallback, and what a
+# screenshot has to differ from for a drift warning to mean anything.
+STORED_FX = {c: e["qty"] for c, e in load_fx_holdings().items()}
+
+
+def fx_positions(amounts=None, rate=1000.0, from_screenshot=True):
+    """FX rows for a snapshot. Defaults to holdings.json's own amounts."""
+    amounts = STORED_FX if amounts is None else amounts
+    return [
+        FxPosition(
+            currency=c, amount=a, rate_idr=rate, from_screenshot=from_screenshot
+        )
+        for c, a in amounts.items()
+    ]
 
 
 def make_snapshot(**overrides) -> Snapshot:
@@ -36,7 +54,7 @@ def make_snapshot(**overrides) -> Snapshot:
             StockHolding(ticker="BBRI", lots=25, price_idr=4200, avg_idr=4000),
         ],
         "etfs": [EtfHolding(ticker=t, price_usd=100.0) for t in ETF_TICKERS],
-        "fx": [FxHolding(currency=c, rate_idr=1000.0) for c in FX_CURRENCIES],
+        "fx": fx_positions(),
     }
     data.update(overrides)
     return Snapshot(**data)
@@ -52,6 +70,10 @@ def make_observations(**overrides) -> Observations:
             StockHolding(ticker="ICBP", lots=10, price_idr=11000, avg_idr=10500),
             StockHolding(ticker="BBRI", lots=25, price_idr=4200, avg_idr=4000),
         ],
+        # The FX screen, read off the screenshot. Matching holdings.json here
+        # keeps the baseline quiet, so a test that changes an amount is the
+        # only thing producing a drift warning.
+        "fx": [FxBalance(currency=c, amount=a) for c, a in STORED_FX.items()],
     }
     data.update(overrides)
     return Observations(**data)
@@ -165,11 +187,78 @@ def test_fx_rows_use_a_plain_product_with_no_anchor():
     assert rows[idx][6] == 1000.0
 
 
-def test_fx_amount_comes_from_holdings():
-    rows = assemble_rows(make_snapshot(), START_ROW, FX)
+def test_fx_amount_comes_from_the_snapshot_not_the_file():
+    """The screenshot's figure wins, even when holdings.json disagrees.
 
+    This is the rework in one assertion: the file says 5142.44 USD, the screen
+    says 4800, and 4800 is what reaches the sheet.
+    """
+    amounts = dict(STORED_FX, USD=4800.0)
+    rows = assemble_rows(make_snapshot(fx=fx_positions(amounts)), START_ROW, FX)
+
+    assert next(r for r in rows if r[2] == "USD")[5] == 4800.0
+    assert STORED_FX["USD"] == 5142.44  # the file is unchanged and overridden
+    # Currencies the screen agreed with are untouched.
     assert next(r for r in rows if r[2] == "JPY")[5] == 28749.11
-    assert next(r for r in rows if r[2] == "CNY")[5] == 17375.69
+
+
+def test_a_new_currency_gets_its_own_row():
+    """A currency holdings.json has never seen still lands in the block."""
+    amounts = dict(STORED_FX, KRW=1_250_000.0)
+    snap = make_snapshot(fx=fx_positions(amounts))
+    rows = assemble_rows(snap, START_ROW, FX)
+
+    krw_index = next(i for i, r in enumerate(rows) if r[2] == "KRW")
+    r = START_ROW + krw_index
+    krw = rows[krw_index]
+
+    assert len(rows) == len(ROSTER) + 1     # the block grew by exactly one row
+    assert krw[1] == "FX"                   # categorised without a config entry
+    assert krw[5] == 1_250_000.0
+    assert krw[3] == f"=F{r}*G{r}"
+    assert krw[4] == f'=CONCATENATE(A{r},"-",B{r})'
+    # No cost basis exists for it, so the change columns stay blank rather
+    # than dividing by zero.
+    assert krw[7] == 0
+    assert krw[8] == "" and krw[9] == ""
+    # New currencies go after the known ones, so no existing row shifts.
+    assert [r[2] for r in rows][:len(ROSTER)] == list(ROSTER)
+
+
+def test_new_currencies_are_appended_alphabetically():
+    """Row order must not depend on the order the model read the screen."""
+    assert order_fx(["THB", "USD", "KRW"]) == ("USD", "KRW", "THB")
+    assert order_fx(["KRW", "USD", "THB"]) == ("USD", "KRW", "THB")
+    # De-duplicated, and known currencies keep their configured order.
+    assert order_fx(["JPY", "CNY", "JPY"]) == ("CNY", "JPY")
+
+
+def test_an_unreported_currency_gets_no_row():
+    """Absent from the screen means absent from the block — not carried over."""
+    amounts = {c: a for c, a in STORED_FX.items() if c != "JPY"}
+    rows = assemble_rows(make_snapshot(fx=fx_positions(amounts)), START_ROW, FX)
+
+    accounts = [r[2] for r in rows]
+    assert "JPY" not in accounts
+    assert len(rows) == len(ROSTER) - 1
+    # Everything above the FX tail is untouched, so no formula anchor moves.
+    assert accounts[:len(FIXED_ROSTER)] == list(FIXED_ROSTER)
+
+
+def test_fx_cost_basis_still_comes_from_the_file():
+    """The screenshot shows a balance, never what was paid for it."""
+    import json
+
+    from tracker import holdings as holdings_module
+
+    amounts = dict(STORED_FX, USD=4800.0)
+    snap = make_snapshot(fx=fx_positions(amounts))
+    raw = json.loads(holdings_module.HOLDINGS_PATH.read_text())
+
+    assert raw["fx"]["USD"]["avg"] is None  # nothing to track yet
+    usd = next(r for r in assemble_rows(snap, START_ROW, FX) if r[2] == "USD")
+    assert usd[7] == 0      # H — blank cost basis, not the screenshot's amount
+    assert usd[8] == ""     # I/J stay blank rather than #DIV/0!
 
 
 def test_fx_values_reproduce_the_real_sheet():
@@ -181,14 +270,15 @@ def test_fx_values_reproduce_the_real_sheet():
         "AUD": (586.71, 12579.08, 7_380_272),
         "JPY": (28749.11, 112.7763, 3_242_218),
     }
-    snap = make_snapshot(
-        fx=[FxHolding(currency=c, rate_idr=rate) for c, (_, rate, _) in observed.items()]
-    )
+    snap = make_snapshot(fx=[
+        FxPosition(currency=c, amount=qty, rate_idr=rate)
+        for c, (qty, rate, _) in observed.items()
+    ])
     rows = assemble_rows(snap, START_ROW, FX)
 
     for currency, (qty, rate, value) in observed.items():
         row = next(r for r in rows if r[2] == currency)
-        assert row[5] == qty, currency          # F from holdings.json
+        assert row[5] == qty, currency          # F as observed
         assert row[6] == rate, currency         # G as supplied
         assert abs(row[5] * row[6] - value) < 2, currency  # what Sheets computes
 
@@ -239,18 +329,70 @@ def test_price_far_from_cost_basis_warns_without_blocking():
     assert any("BBCA" in w and "+153%" in w for w in result["warnings"])
 
 
-def test_missing_currency_is_an_error():
-    partial = [FxHolding(currency=c, rate_idr=1000.0) for c in FX_CURRENCIES[:-1]]
-    result = check_snapshot(make_snapshot(fx=partial))
+def test_a_dropped_currency_warns_but_does_not_block():
+    """The old rule was the opposite: a missing currency used to be an error.
 
-    assert any("Missing currency" in e for e in result["errors"])
-    assert any(FX_CURRENCIES[-1] in e for e in result["errors"])
+    It cannot be one any more. The screenshot is the roster, so a currency
+    that is not on it is the user saying it is gone — a fact, not a defect.
+    What it must never be is silent, because a currency scrolled off-screen
+    looks exactly the same from here.
+    """
+    amounts = {c: a for c, a in STORED_FX.items() if c != "JPY"}
+    result = check_snapshot(make_snapshot(fx=fx_positions(amounts)))
+
+    assert result["errors"] == []
+    dropped = [w for w in result["warnings"] if "DROPPED" in w]
+    assert len(dropped) == 1
+    assert "JPY" in dropped[0]
+    assert "28749.11" in dropped[0]  # says what is being given up
+
+
+def test_a_changed_amount_warns_with_both_figures():
+    result = check_snapshot(make_snapshot(fx=fx_positions(dict(STORED_FX, USD=4800.0))))
+
+    assert result["errors"] == []
+    drift = next(w for w in result["warnings"] if w.startswith("USD:"))
+    assert "4,800.00" in drift and "5,142.44" in drift and "-342.44" in drift
+
+
+def test_a_new_currency_warns_that_it_has_no_cost_basis():
+    result = check_snapshot(make_snapshot(fx=fx_positions(dict(STORED_FX, KRW=1000.0))))
+
+    assert result["errors"] == []
+    assert any("KRW" in w and "new currency" in w for w in result["warnings"])
+
+
+def test_amounts_matching_the_file_produce_no_fx_noise():
+    """The common case — nothing changed — must stay quiet, or the warnings
+    that do matter get lost in a wall of routine ones."""
+    result = check_snapshot(make_snapshot())
+
+    assert result["errors"] == []
+    assert result["warnings"] == []
+
+
+def test_the_holdings_fallback_says_it_is_a_fallback():
+    snap = make_snapshot(fx=fx_positions(from_screenshot=False))
+    result = check_snapshot(snap)
+
+    assert result["errors"] == []
+    assert any("fell back to holdings.json" in w for w in result["warnings"])
+
+
+def test_a_duplicate_currency_is_an_error():
+    """Reading one currency off two screens would double its row."""
+    doubled = fx_positions() + [FxPosition(currency="USD", amount=1.0, rate_idr=1.0)]
+    result = check_snapshot(make_snapshot(fx=doubled))
+
+    assert any("Duplicate currency" in e for e in result["errors"])
 
 
 def test_inverted_fx_rate_warns():
     """USD/IDR reported as 0.000056 instead of ~17800 would zero the holding."""
-    inverted = [FxHolding(currency=c, rate_idr=1000.0) for c in FX_CURRENCIES]
-    inverted[0] = FxHolding(currency=FX_CURRENCIES[0], rate_idr=0.000056)
+    inverted = fx_positions()
+    inverted[0] = FxPosition(
+        currency=inverted[0].currency, amount=inverted[0].amount, rate_idr=0.000056
+    )
     result = check_snapshot(make_snapshot(fx=inverted))
 
     assert result["errors"] == []
@@ -281,11 +423,12 @@ def test_observations_carry_no_market_data():
     """Prices, rates and the date are the server's job, not the model's."""
     fields = set(Observations.model_fields)
 
-    assert {"banks", "ajaib_usd", "stocks"} <= fields
-    # Nothing here can carry a price or rate as a required field.
+    assert {"banks", "ajaib_usd", "stocks", "fx"} <= fields
+    # There is still no way to hand us an ETF price or a share count.
     assert "etfs" not in fields
-    assert "fx" not in fields
-    for optional in ("date", "etf_price_overrides", "fx_rate_overrides"):
+    # FX is a balance, never a rate — the rate stays server-resolved.
+    assert set(FxBalance.model_fields) == {"currency", "amount"}
+    for optional in ("date", "fx", "etf_price_overrides", "fx_rate_overrides"):
         assert Observations.model_fields[optional].is_required() is False
 
 
@@ -296,6 +439,92 @@ def test_observations_default_to_no_overrides_and_no_date():
     assert obs.fx_rate_overrides == []
 
 
+def test_an_unknown_currency_is_accepted_unlike_an_unknown_ticker():
+    """The asymmetry is the point: FX is open, ETFs and stocks are closed."""
+    assert FxBalance(currency="KRW", amount=1.0).currency == "KRW"
+    assert FxBalance(currency="krw", amount=1.0).currency == "KRW"  # normalised
+
+    with pytest.raises(Exception):
+        EtfHolding(ticker="ARKK", price_usd=1.0)
+
+
+def test_idr_is_rejected_as_a_currency():
+    """An IDR row would double-count a cash balance at a rate of 1."""
+    with pytest.raises(Exception):
+        FxBalance(currency="IDR", amount=1.0)
+
+
+def test_a_malformed_currency_code_is_rejected():
+    for bad in ("US", "USDD", "US1", "", "CURRENCY:USDIDR"):
+        with pytest.raises(Exception):
+            FxBalance(currency=bad, amount=1.0)
+
+
 def test_observations_reject_a_malformed_date():
     with pytest.raises(Exception):
         make_observations(date="14/08/2026")
+
+
+# ── The Forex Pocket completeness check ──────────────────────────────────────
+# Real figures from the BCA Forex Pocket screen of 2026-09-22, at the rates the
+# 2026-08-10 block used. EUR 0.00 and GBP 0.00 are on that screen too and are
+# deliberately absent here: a currency the account merely offers is not a
+# holding, and reporting it would add a permanent zero row.
+POCKET = {
+    "CNY": (17375.69, 2638.123),
+    "USD": (4883.48, 17801.0),
+    "SGD": (2181.52, 13924.27),
+    "AUD": (586.71, 12579.08),
+    "JPY": (28749.11, 112.7763),
+}
+POCKET_TOTAL_IDR = 173_857_308.92
+
+
+def pocket_snapshot(currencies=None, total=POCKET_TOTAL_IDR):
+    picked = POCKET if currencies is None else {c: POCKET[c] for c in currencies}
+    return make_snapshot(
+        fx=[
+            FxPosition(currency=c, amount=amount, rate_idr=rate)
+            for c, (amount, rate) in picked.items()
+        ],
+        fx_total_idr=total,
+    )
+
+
+def test_the_real_forex_pocket_reconciles():
+    """The screen's stated total and our own sum must agree on real data.
+
+    If this drifts, the tolerance is wrong rather than the arithmetic — the gap
+    here is the bank's rates against GOOGLEFINANCE's, and nothing else.
+    """
+    result = check_snapshot(pocket_snapshot())
+
+    assert result["errors"] == []
+    assert not any("FX total mismatch" in w for w in result["warnings"])
+
+    computed = sum(a * r for a, r in POCKET.values())
+    assert abs(POCKET_TOTAL_IDR - computed) / POCKET_TOTAL_IDR < 0.001
+
+
+def test_a_currency_scrolled_off_the_list_is_caught_by_the_total():
+    """The point of reporting the total: absence that was not deliberate."""
+    result = check_snapshot(pocket_snapshot(["USD", "SGD", "AUD", "JPY"]))
+
+    mismatch = next(w for w in result["warnings"] if "FX total mismatch" in w)
+    assert "173,857,309" in mismatch
+    assert "scroll to the bottom" in mismatch
+    assert result["errors"] == []  # advisory: the user still decides
+
+
+def test_no_total_means_no_completeness_check():
+    """The total is optional — an older screenshot may not show it."""
+    result = check_snapshot(pocket_snapshot(["USD"], total=None))
+    assert not any("FX total mismatch" in w for w in result["warnings"])
+
+
+def test_the_pocket_total_never_becomes_a_row():
+    """It is a checksum, not a balance — it must not reach the sheet."""
+    rows = assemble_rows(pocket_snapshot(), START_ROW, FX)
+
+    assert not any(POCKET_TOTAL_IDR in (r[3], r[5], r[6]) for r in rows)
+    assert [r[2] for r in rows if r[1] == "FX"] == ["CNY", "USD", "SGD", "AUD", "JPY"]

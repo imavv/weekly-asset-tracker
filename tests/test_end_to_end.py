@@ -19,6 +19,8 @@ import pytest
 os.environ.setdefault("MCP_SECRET", "test-secret")
 os.environ.setdefault("GAS_SECRET_TOKEN", "test-gas-token")
 
+from tracker.config import ETF_TICKERS  # noqa: E402
+
 from tests.test_tracker import make_observations  # noqa: E402
 
 START_ROW = 1600
@@ -313,7 +315,8 @@ async def test_prices_are_fetched_not_supplied_by_the_model(client):
     """
     payload = make_observations().model_dump()
     assert "etfs" not in payload
-    assert "fx" not in payload
+    # FX now carries a balance, but still no rate — that stays server-side.
+    assert all(set(f) == {"currency", "amount"} for f in payload["fx"])
 
     async with client:
         await call_tool(client, "submit_snapshot", {"observations": payload})
@@ -380,3 +383,108 @@ async def test_an_override_unblocks_an_unresolvable_symbol(client):
     assert "WRITTEN" in text
     jpy = next(r for r in POSTED[0]["rows"] if r[2] == "JPY")
     assert jpy[6] == 112.7763
+
+
+@pytest.mark.anyio
+async def test_a_new_currency_reaches_the_sheet(client):
+    """The whole point, end to end: a currency nobody configured gets a row."""
+    obs = make_observations().model_dump()
+    obs["fx"].append({"currency": "KRW", "amount": 1_250_000})
+
+    async with client:
+        text = await call_tool(client, "submit_snapshot", {"observations": obs})
+
+    assert "WRITTEN" in text
+    rows = POSTED[0]["rows"]
+    assert len(rows) == 30                       # one more than the old fixed 29
+    krw = next(r for r in rows if r[2] == "KRW")
+    assert krw[1] == "FX"
+    assert krw[5] == 1_250_000
+    assert krw[6] == 100.0                       # rate resolved server-side
+    # The block's shape is the only thing that changed; ETFs are untouched.
+    voo = next(r for r in rows if r[2] == "VOO")
+    assert voo[5] == 3.068
+
+
+@pytest.mark.anyio
+async def test_a_changed_balance_overrides_holdings_json(client):
+    obs = make_observations().model_dump()
+    for entry in obs["fx"]:
+        if entry["currency"] == "USD":
+            entry["amount"] = 4800
+
+    async with client:
+        text = await call_tool(client, "prepare_snapshot", {"observations": obs})
+
+    assert "4,800.00" in text and "5,142.44" in text  # both figures shown
+    assert POSTED == []
+
+
+@pytest.mark.anyio
+async def test_a_dropped_currency_is_named_in_the_preview(client):
+    obs = make_observations().model_dump()
+    obs["fx"] = [f for f in obs["fx"] if f["currency"] != "JPY"]
+
+    async with client:
+        text = await call_tool(client, "submit_snapshot", {"observations": obs})
+
+    assert "WRITTEN" in text
+    assert "DROPPED" in text and "JPY" in text
+    rows = POSTED[0]["rows"]
+    assert len(rows) == 28
+    assert not any(r[2] == "JPY" for r in rows)
+
+
+@pytest.mark.anyio
+async def test_no_fx_observed_falls_back_to_holdings_json(client):
+    """A missing multi-currency screenshot must not wipe five rows."""
+    obs = make_observations().model_dump()
+    obs["fx"] = []
+
+    async with client:
+        text = await call_tool(client, "submit_snapshot", {"observations": obs})
+
+    assert "WRITTEN" in text
+    assert "fell back to holdings.json" in text
+    rows = POSTED[0]["rows"]
+    assert len(rows) == 29
+    assert next(r for r in rows if r[2] == "USD")[5] == 5142.44
+
+
+@pytest.mark.anyio
+async def test_etf_rows_are_unaffected_by_the_fx_rework(client):
+    """ETF behaviour is explicitly out of scope — pin it so it stays that way."""
+    obs = make_observations().model_dump()
+    obs["fx"] = [{"currency": "KRW", "amount": 5.0}]  # roster churn around it
+
+    async with client:
+        await call_tool(client, "submit_snapshot", {"observations": obs})
+
+    rows = POSTED[0]["rows"]
+    etfs = [r for r in rows if r[1] == "ETF"]
+    assert [r[2] for r in etfs] == list(ETF_TICKERS)   # still the fixed roster
+    voo_index = next(i for i, r in enumerate(rows) if r[2] == "VOO")
+    r = START_ROW + voo_index
+    assert rows[voo_index][5] == 3.068                 # qty still from the file
+    assert rows[voo_index][3] == f"=F{r}*G{r}*$K${START_ROW}"  # still anchored
+
+
+@pytest.mark.anyio
+async def test_an_unpriced_currency_is_not_reported_as_dropped(client):
+    """A rate GOOGLEFINANCE cannot resolve is a different failure from a sale.
+
+    The currency is excluded from the block either way, but calling it DROPPED
+    would tell the user their holding disappeared when in fact the write was
+    refused and nothing happened at all.
+    """
+    UNRESOLVED.add("CURRENCY:AUDIDR")
+
+    async with client:
+        text = await call_tool(
+            client, "prepare_snapshot",
+            {"observations": make_observations().model_dump()},
+        )
+
+    assert "Market data unresolved for: AUD" in text
+    assert "DROPPED" not in text
+    assert POSTED == []
