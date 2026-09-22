@@ -463,3 +463,68 @@ def test_a_malformed_currency_code_is_rejected():
 def test_observations_reject_a_malformed_date():
     with pytest.raises(Exception):
         make_observations(date="14/08/2026")
+
+
+# ── The Forex Pocket completeness check ──────────────────────────────────────
+# Real figures from the BCA Forex Pocket screen of 2026-09-22, at the rates the
+# 2026-08-10 block used. EUR 0.00 and GBP 0.00 are on that screen too and are
+# deliberately absent here: a currency the account merely offers is not a
+# holding, and reporting it would add a permanent zero row.
+POCKET = {
+    "CNY": (17375.69, 2638.123),
+    "USD": (4883.48, 17801.0),
+    "SGD": (2181.52, 13924.27),
+    "AUD": (586.71, 12579.08),
+    "JPY": (28749.11, 112.7763),
+}
+POCKET_TOTAL_IDR = 173_857_308.92
+
+
+def pocket_snapshot(currencies=None, total=POCKET_TOTAL_IDR):
+    picked = POCKET if currencies is None else {c: POCKET[c] for c in currencies}
+    return make_snapshot(
+        fx=[
+            FxPosition(currency=c, amount=amount, rate_idr=rate)
+            for c, (amount, rate) in picked.items()
+        ],
+        fx_total_idr=total,
+    )
+
+
+def test_the_real_forex_pocket_reconciles():
+    """The screen's stated total and our own sum must agree on real data.
+
+    If this drifts, the tolerance is wrong rather than the arithmetic — the gap
+    here is the bank's rates against GOOGLEFINANCE's, and nothing else.
+    """
+    result = check_snapshot(pocket_snapshot())
+
+    assert result["errors"] == []
+    assert not any("FX total mismatch" in w for w in result["warnings"])
+
+    computed = sum(a * r for a, r in POCKET.values())
+    assert abs(POCKET_TOTAL_IDR - computed) / POCKET_TOTAL_IDR < 0.001
+
+
+def test_a_currency_scrolled_off_the_list_is_caught_by_the_total():
+    """The point of reporting the total: absence that was not deliberate."""
+    result = check_snapshot(pocket_snapshot(["USD", "SGD", "AUD", "JPY"]))
+
+    mismatch = next(w for w in result["warnings"] if "FX total mismatch" in w)
+    assert "173,857,309" in mismatch
+    assert "scroll to the bottom" in mismatch
+    assert result["errors"] == []  # advisory: the user still decides
+
+
+def test_no_total_means_no_completeness_check():
+    """The total is optional — an older screenshot may not show it."""
+    result = check_snapshot(pocket_snapshot(["USD"], total=None))
+    assert not any("FX total mismatch" in w for w in result["warnings"])
+
+
+def test_the_pocket_total_never_becomes_a_row():
+    """It is a checksum, not a balance — it must not reach the sheet."""
+    rows = assemble_rows(pocket_snapshot(), START_ROW, FX)
+
+    assert not any(POCKET_TOTAL_IDR in (r[3], r[5], r[6]) for r in rows)
+    assert [r[2] for r in rows if r[1] == "FX"] == ["CNY", "USD", "SGD", "AUD", "JPY"]

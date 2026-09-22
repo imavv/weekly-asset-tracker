@@ -102,6 +102,17 @@ new and dropped currency in the preview, and the human confirm step is where it
 gets caught. An empty `fx` list is the one case that falls back to
 `holdings.json` wholesale, so a forgotten screenshot cannot wipe five rows.
 
+**The Forex Pocket's own total is a checksum.** The BCA screen the balances
+come from scrolls, lists zero-balance currencies it merely offers, and does not
+order by size — so a real holding can sit below the fold, and dropping absent
+currencies turns that into a deleted row. The screen also states its own
+"Total Forex Pocket Value" in IDR, so `fx_total_idr` is reported alongside the
+balances and the server compares it to the sum of what was listed. The gap is
+never zero (the bank converts at its rates, we convert at GOOGLEFINANCE's —
+about 1% on real data), so the check is advisory above a 3% tolerance. It is
+coarse, and deliberately so: it will not notice fifty missing pounds, but it
+will notice a missing pocket worth millions, which is the failure that matters.
+
 ---
 
 ## File map

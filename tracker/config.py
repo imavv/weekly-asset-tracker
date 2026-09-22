@@ -192,6 +192,13 @@ SHARES_PER_LOT = 100  # IDX convention: 1 lot = 100 shares
 FX_FORMULA = '=GOOGLEFINANCE("CURRENCY:USDIDR")'
 PRICE_DEVIATION_THRESHOLD = 0.30  # advisory flag when price vs avg differs >30%
 
+# How far the multi-currency screen's own IDR total may sit from the sum of the
+# currencies reported before it is worth mentioning. It is never zero: the bank
+# converts at its own rates and we convert at GOOGLEFINANCE's, which alone runs
+# to about a percent. Wide enough not to cry wolf every week, narrow enough that
+# a missing currency of any real size trips it.
+FX_TOTAL_TOLERANCE = 0.03
+
 
 def today_wib() -> str:
     """Today's date (YYYY-MM-DD) in WIB / UTC+7, regardless of server timezone.

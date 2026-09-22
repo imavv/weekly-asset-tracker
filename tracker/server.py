@@ -180,6 +180,7 @@ async def _build_block(
         stocks=obs.stocks,
         etfs=etfs,
         fx=fx,
+        fx_total_idr=obs.fx_total_idr,
     )
 
     checks = check_snapshot(snapshot, fx_expected=fx_roster)

@@ -23,6 +23,7 @@ from __future__ import annotations
 from .config import (
     BANK_ACCOUNTS,
     ETF_TICKERS,
+    FX_TOTAL_TOLERANCE,
     PRICE_DEVIATION_THRESHOLD,
     STOCK_TICKERS,
 )
@@ -174,6 +175,28 @@ def _fx_roster_warnings(snap: Snapshot, expected=None) -> list[str]:
                 f"{f.currency}: screenshot says {f.amount:,.2f}, holdings.json "
                 f"says {previous:,.2f} ({delta:+,.2f}). Writing the screenshot "
                 "figure — check it is not a misread, then update holdings.json."
+            )
+
+    # The screen states its own IDR total. Adding up the currencies that were
+    # actually reported and comparing is the one automatic check on whether the
+    # list was complete — a currency scrolled off the bottom would otherwise be
+    # indistinguishable from one that was closed. The rates differ (the bank's
+    # own vs GOOGLEFINANCE's), so only a wide gap means anything.
+    if snap.fx_total_idr:
+        computed = sum(f.amount * f.rate_idr for f in snap.fx)
+        gap = snap.fx_total_idr - computed
+        if computed and abs(gap) / snap.fx_total_idr > FX_TOTAL_TOLERANCE:
+            notes.append(
+                f"FX total mismatch: the screen says "
+                f"{snap.fx_total_idr:,.0f} IDR but the currencies reported add "
+                f"up to {computed:,.0f} ({gap:+,.0f}). "
+                + (
+                    "A shortfall that size usually means a currency further "
+                    "down the list was not reported — scroll to the bottom of "
+                    "the screen and check."
+                    if gap > 0
+                    else "Check that no balance was read twice or misread."
+                )
             )
 
     dropped = [c for c in stored if c not in expected]

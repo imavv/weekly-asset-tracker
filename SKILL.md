@@ -45,22 +45,47 @@ If a screenshot is missing or unreadable, use `0` and **tell the user which
 accounts you zero-filled**. Never silently drop an account — every fixed roster
 entry must be supplied.
 
-**Foreign currencies are different, and the difference matters.** Read the
-multi-currency screen and report `fx` as one entry per currency shown, with the
-amount in that currency (`{"currency": "USD", "amount": 4800}` — not the IDR
-equivalent). That list *is* this week's FX roster:
+**Foreign currencies are different, and the difference matters.** They come
+from the **BCA Forex Pocket** screen (BCA mobile → the `TAHAPAN - IDR/FOREX`
+account → Forex Pocket), which lists one card per currency: a code, a flag and
+an amount, e.g. `USD 4,883.48 / United States Dollar`.
+
+Report `fx` as one entry per currency card, with the amount in that currency —
+`{"currency": "USD", "amount": 4883.48}`, never the IDR equivalent. Four rules
+for reading that screen:
+
+1. **Skip any card showing `0.00`.** The screen lists every currency BCA
+   offers, not just the ones held — `EUR 0.00` and `GBP 0.00` are normally
+   there. A zero card is not a holding, and reporting it would add a permanent
+   empty row to the tracker.
+2. **Scroll to the bottom.** The list is longer than one screen and the
+   currencies are not ordered by size, so a real balance can sit below the
+   fold. If the screenshot is cut off mid-list — a card clipped at the bottom
+   edge, or a scrollbar showing more below — **ask for the rest instead of
+   reporting what you can see.** An omission here deletes a row.
+3. **Report `fx_total_idr`** from "Total Forex Pocket Value" at the top
+   (`IDR 173,857,308.92`). It is not a balance and never becomes a row: the
+   server adds up the currencies you listed and warns if the two disagree,
+   which is what catches a currency you missed. Report it whenever it is
+   visible.
+4. **This is not the BCA row.** The BCA roster entry is the IDR savings balance
+   from the m-Info popup. The Forex Pocket is the foreign-currency side of the
+   same account, and its IDR total is a conversion, not cash. Never put either
+   number in the other's place.
+
+That list *is* this week's FX roster:
 
 - A currency on the screen but never held before **gets a new row**.
 - A currency held before but **not** on the screen **gets no row at all** — it
-  is treated as closed, not carried over.
+  is treated as closed, not carried over. This is why rule 2 matters: a
+  scrolled-off currency and a closed one look identical from the server's side,
+  and only the total in rule 3 can tell them apart.
 
-So report the whole screen, every time, not just what changed. If you only have
-a partial view of it, say so and ask rather than guessing — an omission is
-indistinguishable from a sale.
+So report the whole screen, every time, not just what changed.
 
-Leave `fx` empty **only** when you have no multi-currency screenshot at all.
-The server then falls back to the last known amounts in `holdings.json` and
-says so in the preview.
+Leave `fx` empty **only** when you have no Forex Pocket screenshot at all. The
+server then falls back to the last known amounts in `holdings.json` and says so
+in the preview.
 
 You do not need the date, ETF prices, or FX rates. The server resolves all
 three itself — including the rate for a currency it has never seen.
@@ -110,8 +135,9 @@ tool call.
 | Stock `lots` | broker screenshot | **RAW lot count** as displayed. Do NOT multiply by 100 |
 | Stock `price_idr` | broker screenshot | Last price, IDR |
 | Stock `avg_idr` | prior week / user | Cost basis; carry forward unless the user says it changed |
-| `fx[].currency` | multi-currency screen | 3-letter code, e.g. `USD`, `SGD` |
-| `fx[].amount` | multi-currency screen | Balance **in that currency**, never the IDR equivalent |
+| `fx[].currency` | BCA Forex Pocket | 3-letter code, e.g. `USD`, `SGD` |
+| `fx[].amount` | BCA Forex Pocket | Balance **in that currency**, never the IDR equivalent. Skip `0.00` cards |
+| `fx_total_idr` | BCA Forex Pocket | "Total Forex Pocket Value" — a checksum, not a row |
 
 **Resolved by the server, never by you:** the snapshot date, all 11 ETF prices,
 every FX rate, ETF share counts, FX cost basis, every spreadsheet formula, and
@@ -138,11 +164,13 @@ exception — they come from the screen, not from this table.
 | Ajaib | Buying Power, in USD |
 | BBCA / ICBP / BBRI | Broker screenshot: lots + last price |
 | VOO, VT, VTI, SPYM, GDX, VEA, SMH, GLD, IGV, XLP, XLE | server-resolved — you supply nothing |
-| Foreign currencies | **the multi-currency screen** — report every currency and amount it shows |
+| BCA (IDR) | m-Info popup balance — the IDR savings, **not** the Forex Pocket |
+| Foreign currencies | **BCA Forex Pocket** — every currency card with a non-zero amount |
 
 Currencies are the only open-ended part of the roster. CNY, USD, SGD, AUD and
 JPY are what has been held historically, but that list is neither a minimum nor
-a maximum: report exactly what the screen shows.
+a maximum: report exactly the non-zero cards the screen shows, whatever they
+are.
 
 **Bibit (RDN)** is negligible — skip it. It is not the same as **Bibit**, and it
 is not **Stockbit (RDN)**, which *is* tracked.
@@ -170,6 +198,13 @@ and that is expected; the server computes it.
   previous week and do not invent a zero row. Report what you see; the preview
   will flag the currency as dropped, and the user decides at the confirm step
   whether that is real or a screenshot that cut off.
+- **A currency reads `0.00`** — skip it. If it is one that *was* held, the
+  preview will report it as dropped, which is the correct reading of a drained
+  pocket: the row goes away rather than being carried at zero.
+- **"FX total mismatch" in the preview** — the currencies reported do not add
+  up to the screen's own total. Almost always a currency below the fold that
+  was never in the screenshot. Ask for the rest of the list before submitting;
+  do not talk the user past it.
 - **Inverted FX rate** — the rate is IDR per one unit of the foreign currency.
   A value below 1 is almost certainly upside down; the preview warns about it.
 - **New account** — the roster is fixed in the server's schema for everything

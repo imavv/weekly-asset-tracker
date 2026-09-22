@@ -202,6 +202,17 @@ class Observations(BaseModel):
             "the last known amounts in holdings.json and says so."
         ),
     )
+    fx_total_idr: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The 'Total Forex Pocket Value' in IDR shown at the top of the "
+            "multi-currency screen. This is NOT a balance and never becomes a "
+            "row — the server only adds up the currencies you listed and warns "
+            "if the two disagree, which is how a currency scrolled off the "
+            "bottom of the list gets caught. Report it whenever it is visible."
+        ),
+    )
     date: str | None = Field(
         default=None,
         description=(
@@ -265,6 +276,11 @@ class Snapshot(BaseModel):
             "may be empty, and its length varies week to week — it is the "
             "screenshot's roster, not a fixed one."
         ),
+    )
+    fx_total_idr: float | None = Field(
+        default=None,
+        ge=0,
+        description="The screen's own IDR total, for the completeness check.",
     )
 
     @field_validator("date")
